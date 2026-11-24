@@ -1,0 +1,67 @@
+name: rukn_app
+description: "رُكْن — مساحتك الخاصة لتدوين الفكر وتنظيم اليوم بهوية خليجية فاخرة"
+publish_to: 'none'
+version: 1.0.0+100
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  shared_preferences: ^2.2.2
+  path_provider: ^2.1.2
+  share_plus: ^7.2.2
+  archive: ^3.4.10
+  intl: any
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/fonts/
+
+  fonts:
+    - family: Tajawal
+      fonts:
+        - asset: assets/fonts/tajawal_regular.ttf
+        - asset: assets/fonts/tajawal_bold.ttf
+          weight: 700
+    - family: Almarai
+      fonts:
+        - asset: assets/fonts/almarai_regular.ttf
+        - asset: assets/fonts/almarai_bold.ttf
+          weight: 700
+    - family: ScheherazadeNew
+      fonts:
+        - asset: assets/fonts/scheherazade_regular.ttf
+        - asset: assets/fonts/scheherazade_bold.ttf
+          weight: 700
+    - family: ReadexPro
+      fonts:
+        - asset: assets/fonts/readex_pro.ttf
+    - family: NotoSansArabic
+      fonts:
+        - asset: assets/fonts/noto_sans_arabic.ttf
+    - family: NotoNaskhArabic
+      fonts:
+        - asset: assets/fonts/noto_naskh_arabic.ttf
+    - family: IBMPlexSansArabic
+      fonts:
+        - asset: assets/fonts/ibm_plex_arabic.ttf
+        - asset: assets/fonts/ibm_plex_arabic_bold.ttf
+          weight: 700
+    - family: ArefRuqaa
+      fonts:
+        - asset: assets/fonts/aref_ruqaa.ttf
+        - asset: assets/fonts/aref_ruqaa_bold.ttf
+          weight: 700
+    - family: ReemKufi
+      fonts:
+        - asset: assets/fonts/reem_kufi.ttf
