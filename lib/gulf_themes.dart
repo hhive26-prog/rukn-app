@@ -79,7 +79,7 @@ class GulfThemes {
       primaryDark: Color(0xFF4C0519),
       accentGold: Color(0xFFE5C158),
       softTint: Color(0xFFFFE4E6),
-      lightBackground: Color(0xGGG9F5F6 == 0 ? 0xFFF9F5F6 : 0xFFF9F5F6),
+      lightBackground: Color(0xFFF9F5F6),
       lightPaper: Color(0xFFFFFFFF),
     ),
     GulfThemeData(
@@ -115,7 +115,7 @@ class GulfThemes {
       primaryDark: Color(0xFF431407),
       accentGold: Color(0xFFD97706),
       softTint: Color(0xFFFFEDD5),
-      lightBackground: Color(0xGGG8F5F2 == 0 ? 0xFFF8F5F2 : 0xFFF8F5F2),
+      lightBackground: Color(0xFFF8F5F2),
       lightPaper: Color(0xFFFFFFFF),
     ),
     GulfThemeData(
@@ -127,7 +127,7 @@ class GulfThemes {
       primaryDark: Color(0xFF450A0A),
       accentGold: Color(0xFFF59E0B),
       softTint: Color(0xFFFEE2E2),
-      lightBackground: Color(0xGGG9F6F6 == 0 ? 0xFFF9F6F6 : 0xFFF9F6F6),
+      lightBackground: Color(0xFFF9F6F6),
       lightPaper: Color(0xFFFFFFFF),
     ),
     GulfThemeData(
@@ -231,19 +231,19 @@ class AppSettingsController extends ChangeNotifier {
   static const MethodChannel _nativeChannel = MethodChannel('com.rukn.app/native');
 
   // التخصيص الشخصي لصاحب الركن
-  String _personalPrefix = 'رُكْن'; // رُكْن، مِساحة، دِيوان، خَلوة، مفكرة
+  String _personalPrefix = 'رُكْن';
   String _userName = '';
   String _customSubtitle = 'مساحتك الخاصة لتدوين الفكر وتنظيم اليوم';
   String _signatureText = '';
 
   // المظهر والخطوط
-  int _themeIndex = 0; // افتراضي: السعودي الملكي
+  int _themeIndex = 0;
   bool _isDarkMode = false;
-  int _fontIndex = 1; // افتراضي: خط تجوال الخليجي الأنيق
-  int _zoomPercent = 100; // من 50% إلى 250%
+  int _fontIndex = 1;
+  int _zoomPercent = 100;
 
   // إعدادات شريط أدوات التحرير
-  bool _toolbarIconsOnly = false; // نصوص + رموز افتراضياً
+  bool _toolbarIconsOnly = false;
   List<String> _orderedToolIds = [];
   Set<String> _enabledToolIds = {};
 
@@ -278,7 +278,6 @@ class AppSettingsController extends ChangeNotifier {
 
   String? get activeFontFamily => activeFontOption.fontFamily;
 
-  /// العنوان الكامل الذي يظهر في البطاقة الملكية العلوية
   String get fullPersonalHeaderTitle {
     final cleanName = _userName.trim();
     if (cleanName.isEmpty) {
@@ -287,7 +286,6 @@ class AppSettingsController extends ChangeNotifier {
     return '$_personalPrefix $cleanName';
   }
 
-  // ألوان ديناميكية حسب الوضع الليلي أو النهاري
   Color get scaffoldBgColor =>
       _isDarkMode ? const Color(0xFF0F172A) : activeTheme.lightBackground;
 
@@ -477,7 +475,6 @@ class AppSettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// تفعيل أو إيقاف بقاء الشاشة مضاءة أثناء القراءة (وضع القهوة والقراءة)
   Future<void> applyWakeLock(bool enable) async {
     try {
       await _nativeChannel.invokeMethod('setKeepScreenOn', {
