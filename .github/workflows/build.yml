@@ -1,18 +1,17 @@
-name: Build Rukn Luxury APK
-
-permissions:
-  contents: write
+name: Build & Publish Rukn Luxury APK
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build-android-apk:
-    name: Build & Publish Rukn APK
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
 
     steps:
       - name: Checkout Repository
@@ -24,36 +23,49 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Flutter Stable (3.24.5)
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.5'
-          channel: 'stable'
-          cache: true
-
-      - name: Configure Google Maven Central Mirror & Force Unified Kotlin Stdlib
+      - name: Configure Gradle Mirror & Kotlin Resolution (Zero-Conflict Mode)
         run: |
-          git -C "$FLUTTER_ROOT" checkout -- . || true
           mkdir -p ~/.gradle/init.d
           cat << 'EOF' > ~/.gradle/init.d/maven-mirror.gradle
           def mirrorUrl = "https://maven-central.storage-download.googleapis.com/maven2/"
+
+          gradle.settingsEvaluated { settings ->
+              settings.pluginManagement.repositories.all { repo ->
+                  if (repo instanceof MavenArtifactRepository) {
+                      def u = repo.url.toString()
+                      if (u.contains("repo.maven.apache.org") || u.contains("repo1.maven.org")) {
+                          repo.url = URI.create(mirrorUrl)
+                      }
+                  }
+              }
+              settings.dependencyResolutionManagement.repositories.all { repo ->
+                  if (repo instanceof MavenArtifactRepository) {
+                      def u = repo.url.toString()
+                      if (u.contains("repo.maven.apache.org") || u.contains("repo1.maven.org")) {
+                          repo.url = URI.create(mirrorUrl)
+                      }
+                  }
+              }
+          }
+
           allprojects {
               buildscript {
-                  repositories {
-                      maven { url mirrorUrl }
-                      google()
-                  }
-                  configurations.all {
-                      resolutionStrategy.eachDependency { details ->
-                          if (details.requested.group == 'org.jetbrains.kotlin' && details.requested.name.startsWith('kotlin-stdlib')) {
-                              details.useVersion '1.8.22'
+                  repositories.all { repo ->
+                      if (repo instanceof MavenArtifactRepository) {
+                          def u = repo.url.toString()
+                          if (u.contains("repo.maven.apache.org") || u.contains("repo1.maven.org")) {
+                              repo.url = URI.create(mirrorUrl)
                           }
                       }
                   }
               }
-              repositories {
-                  maven { url mirrorUrl }
-                  google()
+              repositories.all { repo ->
+                  if (repo instanceof MavenArtifactRepository) {
+                      def u = repo.url.toString()
+                      if (u.contains("repo.maven.apache.org") || u.contains("repo1.maven.org")) {
+                          repo.url = URI.create(mirrorUrl)
+                      }
+                  }
               }
               configurations.all {
                   resolutionStrategy.eachDependency { details ->
@@ -63,98 +75,68 @@ jobs:
                   }
               }
           }
-          gradle.beforeProject { project ->
-              project.repositories.all { repo ->
-                  if (repo instanceof MavenArtifactRepository) {
-                      def u = repo.url.toString()
-                      if (u.contains("repo.maven.apache.org") || u.contains("repo1.maven.org")) {
-                          repo.setUrl(mirrorUrl)
-                      }
-                  }
-              }
-              project.buildscript.repositories.all { repo ->
-                  if (repo instanceof MavenArtifactRepository) {
-                      def u = repo.url.toString()
-                      if (u.contains("repo.maven.apache.org") || u.contains("repo1.maven.org")) {
-                          repo.setUrl(mirrorUrl)
-                      }
-                  }
-              }
-          }
           EOF
 
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.3'
+          channel: 'stable'
+          cache: true
+
       - name: Cache Permanent Android Signing Keystore
+        id: cache-keystore
         uses: actions/cache@v4
         with:
           path: ~/.android/rukn_fixed.keystore
           key: rukn-fixed-signing-keystore-permanent-v1
 
-      - name: Generate Fixed Keystore (If Not Cached)
+      - name: Generate Fixed Signing Keystore (If Not Cached)
+        if: steps.cache-keystore.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.android
-          if [ ! -f ~/.android/rukn_fixed.keystore ]; then
-            keytool -genkey -v \
-              -keystore ~/.android/rukn_fixed.keystore \
-              -alias rukn_key \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 36500 \
-              -storepass rukn123456 \
-              -keypass rukn123456 \
-              -dname "CN=Rukn Luxury App, OU=Gulf Edition, O=Rukn, L=Riyadh, S=Riyadh, C=SA"
-          fi
+          keytool -genkey -v \
+            -keystore ~/.android/rukn_fixed.keystore \
+            -alias rukn_key \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 36500 \
+            -storepass rukn123456 \
+            -keypass rukn123456 \
+            -dname "CN=Rukn Luxury App, OU=Mobile, O=Rukn, L=Riyadh, S=Riyadh, C=SA"
 
-      - name: Assemble Clean Flutter Project Structure
+      - name: Prepare Clean Flutter Workspace & Assets
         run: |
-          mkdir -p /tmp/rukn_source_lib
-          for f in $(find . -maxdepth 3 -name "*.dart"); do
-            cp "$f" /tmp/rukn_source_lib/
-          done
-
-          rm -rf build_workspace
           mkdir -p build_workspace
           cd build_workspace
-
           flutter create --org com.rukn --project-name rukn_app --platforms=android .
+
           rm -rf lib/*
-          cp /tmp/rukn_source_lib/*.dart lib/
+          cp -r "$GITHUB_WORKSPACE/lib/"* lib/
 
-          echo "Verified Dart files in lib/:"
-          ls -la lib/
+          # التوافق التلقائي سواء كانت الأكواد 8 ملفات أو 7 ملفات
+          if grep -q "class EditorScreen" lib/home_screen.dart; then
+            echo "export 'home_screen.dart';" > lib/editor_screen.dart
+          fi
 
-          for req in main.dart gulf_themes.dart luxury_ui.dart smart_arabic_engine.dart storage_vault.dart share_card_studio.dart settings_screen.dart home_screen.dart editor_screen.dart; do
-            if [ ! -f "lib/$req" ]; then
-              echo "ERROR: Missing required file lib/$req"
-              exit 1
-            fi
-          done
-
-      - name: Download Luxury Arabic Fonts (Static Lightweight TTFs)
-        run: |
-          cd build_workspace
           mkdir -p assets/fonts
+          BASE_FONT_URL="https://raw.githubusercontent.com/google/fonts/main/ofl"
+          curl -L -s --retry 5 "$BASE_FONT_URL/amiri/Amiri-Regular.ttf" -o assets/fonts/Amiri-Regular.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/amiri/Amiri-Bold.ttf" -o assets/fonts/Amiri-Bold.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" -o assets/fonts/Cairo-Regular.ttf
+          cp assets/fonts/Cairo-Regular.ttf assets/fonts/Cairo-Bold.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/tajawal/Tajawal-Regular.ttf" -o assets/fonts/Tajawal-Regular.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/tajawal/Tajawal-Bold.ttf" -o assets/fonts/Tajawal-Bold.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/almarai/Almarai-Regular.ttf" -o assets/fonts/Almarai-Regular.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/almarai/Almarai-Bold.ttf" -o assets/fonts/Almarai-Bold.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/scheherazadenew/ScheherazadeNew-Regular.ttf" -o assets/fonts/ScheherazadeNew-Regular.ttf
+          curl -L -s --retry 5 "$BASE_FONT_URL/scheherazadenew/ScheherazadeNew-Bold.ttf" -o assets/fonts/ScheherazadeNew-Bold.ttf
 
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-Regular.ttf" -o assets/fonts/Almarai-Regular.ttf
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-Bold.ttf" -o assets/fonts/Almarai-Bold.ttf
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-ExtraBold.ttf" -o assets/fonts/Almarai-ExtraBold.ttf
-
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Regular.ttf" -o assets/fonts/Tajawal-Regular.ttf
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Medium.ttf" -o assets/fonts/Tajawal-Medium.ttf
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Bold.ttf" -o assets/fonts/Tajawal-Bold.ttf
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-ExtraBold.ttf" -o assets/fonts/Tajawal-ExtraBold.ttf
-
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf" -o assets/fonts/Amiri-Regular.ttf
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf" -o assets/fonts/Amiri-Bold.ttf
-
-          curl -L -s --retry 5 "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" -o assets/fonts/Cairo-Regular.ttf
-
-      - name: Write pubspec.yaml
-        run: |
-          cat << 'EOF' > build_workspace/pubspec.yaml
+          cat << 'EOF' > pubspec.yaml
           name: rukn_app
-          description: رُكْن - المفكرة العربية الفاخرة
+          description: "رُكْن - المفكرة العربية الفاخرة"
           publish_to: 'none'
-          version: 2.1.0+2
+          version: 2.2.0+22
 
           environment:
             sdk: '>=3.2.0 <4.0.0'
@@ -162,17 +144,17 @@ jobs:
           dependencies:
             flutter:
               sdk: flutter
+            flutter_localizations:
+              sdk: flutter
             shared_preferences: ^2.2.3
             path_provider: ^2.1.3
             share_plus: ^9.0.0
-            archive: ^3.6.1
             intl: ^0.19.0
-            hijri: ^3.0.0
+            hijri: ^3.0.1
+            archive: ^3.6.1
+            uuid: ^4.4.0
             wakelock_plus: ^1.2.5
-
-          dev_dependencies:
-            flutter_test:
-              sdk: flutter
+            package_info_plus: ^8.0.0
 
           flutter:
             uses-material-design: true
@@ -180,54 +162,86 @@ jobs:
               - assets/fonts/
 
             fonts:
-              - family: Cairo
-                fonts:
-                  - asset: assets/fonts/Cairo-Regular.ttf
-              - family: Almarai
-                fonts:
-                  - asset: assets/fonts/Almarai-Regular.ttf
-                    weight: 400
-                  - asset: assets/fonts/Almarai-Bold.ttf
-                    weight: 700
-                  - asset: assets/fonts/Almarai-ExtraBold.ttf
-                    weight: 800
-              - family: Tajawal
-                fonts:
-                  - asset: assets/fonts/Tajawal-Regular.ttf
-                    weight: 400
-                  - asset: assets/fonts/Tajawal-Medium.ttf
-                    weight: 500
-                  - asset: assets/fonts/Tajawal-Bold.ttf
-                    weight: 700
-                  - asset: assets/fonts/Tajawal-ExtraBold.ttf
-                    weight: 800
               - family: Amiri
                 fonts:
                   - asset: assets/fonts/Amiri-Regular.ttf
-                    weight: 400
                   - asset: assets/fonts/Amiri-Bold.ttf
+                    weight: 700
+              - family: Cairo
+                fonts:
+                  - asset: assets/fonts/Cairo-Regular.ttf
+                  - asset: assets/fonts/Cairo-Bold.ttf
+                    weight: 700
+              - family: Tajawal
+                fonts:
+                  - asset: assets/fonts/Tajawal-Regular.ttf
+                  - asset: assets/fonts/Tajawal-Bold.ttf
+                    weight: 700
+              - family: Almarai
+                fonts:
+                  - asset: assets/fonts/Almarai-Regular.ttf
+                  - asset: assets/fonts/Almarai-Bold.ttf
+                    weight: 700
+              - family: ScheherazadeNew
+                fonts:
+                  - asset: assets/fonts/ScheherazadeNew-Regular.ttf
+                  - asset: assets/fonts/ScheherazadeNew-Bold.ttf
                     weight: 700
           EOF
 
-      - name: Configure Android Native Files, Luxury Icon & MediaStore PNG/ZIP Support
+      - name: Configure Android Project, Luxury Icon & Native Bridge
         run: |
           cd build_workspace
+
+          cat << 'EOF' > android/settings.gradle
+          pluginManagement {
+              def flutterSdkPath = {
+                  def properties = new Properties()
+                  file("local.properties").withInputStream { properties.load(it) }
+                  def flutterSdkPath = properties.getProperty("flutter.sdk")
+                  assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+                  return flutterSdkPath
+              }()
+
+              includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          plugins {
+              id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+              id "com.android.application" version "8.1.0" apply false
+              id "org.jetbrains.kotlin.android" version "1.8.22" apply false
+          }
+
+          include ":app"
+          EOF
 
           cat << 'EOF' > android/build.gradle
           allprojects {
               repositories {
-                  maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
                   google()
                   mavenCentral()
               }
+              configurations.all {
+                  resolutionStrategy.eachDependency { details ->
+                      if (details.requested.group == 'org.jetbrains.kotlin' && details.requested.name.startsWith('kotlin-stdlib')) {
+                          details.useVersion '1.8.22'
+                      }
+                  }
+              }
           }
 
-          rootProject.buildDir = "../build"
+          rootProject.buildDir = '../build'
           subprojects {
               project.buildDir = "${rootProject.buildDir}/${project.name}"
           }
           subprojects {
-              project.evaluationDependsOn(":app")
+              project.evaluationDependsOn(':app')
           }
 
           tasks.register("clean", Delete) {
@@ -259,11 +273,8 @@ jobs:
                   applicationId "com.rukn.app"
                   minSdkVersion 21
                   targetSdkVersion 34
-                  versionCode 2
-                  versionName "2.1.0"
-                  ndk {
-                      abiFilters 'armeabi-v7a', 'arm64-v8a'
-                  }
+                  versionCode 22
+                  versionName "2.2.0"
               }
 
               signingConfigs {
@@ -281,11 +292,14 @@ jobs:
                       minifyEnabled false
                       shrinkResources false
                   }
+                  debug {
+                      signingConfig signingConfigs.release
+                  }
               }
           }
 
           flutter {
-              source "../.."
+              source '../..'
           }
 
           dependencies {
@@ -293,6 +307,7 @@ jobs:
           }
           EOF
 
+          # أيقونة رُكْن الملكية الفاخرة (كحلي ملكي وذهبي)
           mkdir -p android/app/src/main/res/drawable
           cat << 'EOF' > android/app/src/main/res/drawable/rukn_luxury_icon.xml
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -304,34 +319,45 @@ jobs:
                   android:fillColor="#0B132B"
                   android:pathData="M0,0h108v108h-108z"/>
               <path
-                  android:fillColor="#162447"
-                  android:pathData="M14,14h80v80h-80z"/>
+                  android:fillColor="#14213D"
+                  android:pathData="M54,8L98,54L54,100L10,54Z"/>
+              <path
+                  android:strokeColor="#D4AF37"
+                  android:strokeWidth="2.8"
+                  android:fillColor="#00000000"
+                  android:pathData="M20,20h68v68h-68z"/>
+              <path
+                  android:strokeColor="#D4AF37"
+                  android:strokeWidth="2.2"
+                  android:fillColor="#00000000"
+                  android:pathData="M54,12L96,54L54,96L12,54Z"/>
               <path
                   android:fillColor="#D4AF37"
-                  android:pathData="M54,14 L94,54 L54,94 L14,54 Z M54,22 L22,54 L54,86 L86,54 Z"/>
+                  android:pathData="M65,35 C65,35 67,54 57,64 C49,72 37,73 34,72 C36,68 45,67 51,60 C58,52 57,38 57,38 Z"/>
               <path
-                  android:fillColor="#D4AF37"
-                  android:pathData="M36,36 h36 v6 h-36 z M36,50 h36 v6 h-36 z M36,64 h24 v6 h-24 z"/>
-              <path
-                  android:fillColor="#F59E0B"
-                  android:pathData="M70,62 L78,70 L64,84 L56,84 L56,76 Z"/>
+                  android:fillColor="#F3E5AB"
+                  android:pathData="M54,27L58,31L54,35L50,31Z"/>
           </vector>
           EOF
+
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
 
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.rukn.app">
-              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+
+              <uses-permission android:name="android.permission.VIBRATE"/>
               <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
 
               <application
                   android:label="رُكْن"
                   android:name="${applicationName}"
                   android:icon="@drawable/rukn_luxury_icon"
                   android:roundIcon="@drawable/rukn_luxury_icon"
-                  android:allowBackup="true"
-                  android:supportsRtl="true">
+                  android:requestLegacyExternalStorage="true"
+                  android: enableOnBackInvokedCallback="true">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -341,11 +367,20 @@ jobs:
                       android:hardwareAccelerated="true"
                       android:windowSoftInputMode="adjustResize">
                       <meta-data
-                          android:name="io.flutter.embedding.android.NormalTheme"
-                          android:resource="@style/NormalTheme" />
+                        android:name="io.flutter.embedding.android.NormalTheme"
+                        android:resource="@style/NormalTheme"
+                        />
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="file" />
+                          <data android:scheme="content" />
+                          <data android:mimeType="text/plain" />
                       </intent-filter>
                   </activity>
                   <meta-data
@@ -360,91 +395,134 @@ jobs:
           package com.rukn.app
 
           import android.content.ContentValues
+          import android.content.Intent
+          import android.net.Uri
           import android.os.Build
           import android.os.Environment
           import android.provider.MediaStore
+          import android.provider.OpenableColumns
+          import androidx.annotation.NonNull
           import io.flutter.embedding.android.FlutterActivity
           import io.flutter.embedding.engine.FlutterEngine
           import io.flutter.plugin.common.MethodChannel
+          import java.io.BufferedReader
           import java.io.File
           import java.io.FileOutputStream
+          import java.io.InputStreamReader
 
           class MainActivity: FlutterActivity() {
-              private val CHANNEL = "com.rukn.app/vault_channel"
+              private val CHANNEL = "com.rukn.app/native_bridge"
+              private var initialExternalFile: Map<String, String>? = null
 
-              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+              override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
                   super.configureFlutterEngine(flutterEngine)
+                  handleIncomingIntent(intent)
+
                   MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
-                      if (call.method == "saveToDownloads") {
-                          val fileName = call.argument<String>("fileName") ?: "Rukn_File"
-                          val bytes = call.argument<ByteArray>("bytes")
-                          val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
-
-                          if (bytes == null) {
-                              result.error("INVALID_BYTES", "Bytes are null", null)
-                              return@setMethodCallHandler
-                          }
-
-                          try {
-                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                  val resolver = applicationContext.contentResolver
-                                  val contentValues = ContentValues().apply {
-                                      put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                                      put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                                      put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Rukn_Backups")
-                                  }
-                                  val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                                  if (uri != null) {
-                                      resolver.openOutputStream(uri)?.use { out ->
-                                          out.write(bytes)
-                                          out.flush()
-                                      }
-                                      result.success("Downloads/Rukn_Backups/$fileName")
-                                  } else {
-                                      result.error("URI_NULL", "Could not create MediaStore entry", null)
-                                  }
+                      when (call.method) {
+                          "saveToDownloads" -> {
+                              val fileName = call.argument<String>("fileName") ?: "rukn_file.txt"
+                              val bytes = call.argument<ByteArray>("bytes")
+                              val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                              if (bytes == null) {
+                                  result.error("INVALID", "No bytes provided", null)
                               } else {
-                                  val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Rukn_Backups")
-                                  if (!dir.exists()) dir.mkdirs()
-                                  val outFile = File(dir, fileName)
-                                  FileOutputStream(outFile).use { out ->
-                                      out.write(bytes)
-                                      out.flush()
-                                  }
-                                  result.success(outFile.absolutePath)
+                                  val savedPath = saveFileToDownloads(fileName, bytes, mimeType)
+                                  result.success(savedPath)
                               }
-                          } catch (e: Exception) {
-                              result.error("SAVE_ERROR", e.message, null)
+                          }
+                          "getInitialExternalFile" -> {
+                              result.success(initialExternalFile)
+                              initialExternalFile = null
+                          }
+                          else -> result.notImplemented()
+                      }
+                  }
+              }
+
+              override fun onNewIntent(intent: Intent) {
+                  super.onNewIntent(intent)
+                  handleIncomingIntent(intent)
+              }
+
+              private fun handleIncomingIntent(intent: Intent?) {
+                  if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
+                      val uri = intent.data!!
+                      try {
+                          val title = queryFileName(uri) ?: "ملف_خارجي"
+                          val inputStream = contentResolver.openInputStream(uri)
+                          val reader = BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))
+                          val content = reader.readText()
+                          reader.close()
+                          initialExternalFile = mapOf("title" to title, "content" to content)
+                      } catch (e: Exception) {
+                          e.printStackTrace()
+                      }
+                  }
+              }
+
+              private fun queryFileName(uri: Uri): String? {
+                  var name: String? = null
+                  contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                      if (cursor.moveToFirst()) {
+                          val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                          if (idx >= 0) name = cursor.getString(idx)
+                      }
+                  }
+                  return name?.replace(".txt", "", ignoreCase = true)
+              }
+
+              private fun saveFileToDownloads(fileName: String, bytes: ByteArray, mimeType: String): String {
+                  return try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          val resolver = contentResolver
+                          val contentValues = ContentValues().apply {
+                              put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                              put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                              put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Rukn")
+                          }
+                          val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                          if (uri != null) {
+                              resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                              "Downloads/Rukn/$fileName"
+                          } else {
+                              ""
                           }
                       } else {
-                          result.notImplemented()
+                          val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Rukn")
+                          if (!dir.exists()) dir.mkdirs()
+                          val file = File(dir, fileName)
+                          FileOutputStream(file).use { it.write(bytes) }
+                          file.absolutePath
                       }
+                  } catch (e: Exception) {
+                      e.printStackTrace()
+                      ""
                   }
               }
           }
           EOF
 
-      - name: Build Lightweight Signed Release APK (ARM64 + ARMv7 Only)
+      - name: Build Lightweight Mobile Release APK (ARM64 + ARMv7 Only)
         run: |
           cd build_workspace
           flutter pub get
           flutter build apk --release --target-platform android-arm64,android-arm --tree-shake-icons
-          cp build/app/outputs/flutter-apk/app-release.apk ../Rukn-Luxury-Gulf-Notepad.apk
-          ls -lh ../Rukn-Luxury-Gulf-Notepad.apk
+          cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/Rukn-Luxury-Notepad.apk"
 
-      - name: Upload APK as GitHub Actions Artifact
+      - name: Upload Direct APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Rukn-Luxury-APK
-          path: Rukn-Luxury-Gulf-Notepad.apk
+          name: Rukn-Luxury-Notepad-APK
+          path: Rukn-Luxury-Notepad.apk
           if-no-files-found: error
 
       - name: Publish Direct One-Click APK to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create latest Rukn-Luxury-Gulf-Notepad.apk \
-            --title "رُكْن (Rukn) - الإصدار الفاخر المحدث v2.1" \
-            --notes "تحميل مباشر بضغطة واحدة لملف تثبيت تطبيق رُكْن (APK) بدون ضغط." \
-            --clobber || \
-          gh release upload latest Rukn-Luxury-Gulf-Notepad.apk --clobber
+          gh release delete latest --yes || true
+          git push origin :refs/tags/latest || true
+          gh release create latest Rukn-Luxury-Notepad.apk \
+            --title "رُكْن - الإصدار الملكي الفاخر (Rukn v2.2)" \
+            --notes "تحميل مباشر بضغطة واحدة لتطبيق رُكْن (ملف APK جاهز للتثبيت والتحديث المباشر بدون فك ضغط)."
