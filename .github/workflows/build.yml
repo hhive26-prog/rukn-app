@@ -37,12 +37,13 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-rukn-v3-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-rukn-v4-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
+            ${{ runner.os }}-gradle-rukn-v4-
             ${{ runner.os }}-gradle-rukn-v3-
             ${{ runner.os }}-gradle-rukn-v2-
 
-      - name: Reset Flutter Internal Scripts & Inject In-Memory Google Mirror
+      - name: Reset Flutter Internal Scripts, Inject Google Mirror & Unify Kotlin Version
         run: |
           git -C "$FLUTTER_ROOT" checkout -- . || true
           git -C "$FLUTTER_ROOT" clean -fd || true
@@ -77,6 +78,14 @@ jobs:
                       repo.url = GOOGLE_MIRROR
                   }
               }
+              // Force unified Kotlin stdlib version across all plugins to prevent Duplicate Classes error
+              project.configurations.all {
+                  resolutionStrategy.eachDependency { details ->
+                      if (details.requested.group == 'org.jetbrains.kotlin' && details.requested.name.startsWith('kotlin-stdlib')) {
+                          details.useVersion '1.8.22'
+                      }
+                  }
+              }
           }
           EOF
 
@@ -109,7 +118,6 @@ jobs:
           find_and_copy_dart "editor_screen.dart" "class RuknEditorScreen"
           find_and_copy_dart "settings_screen.dart" "class RuknSettingsScreen"
 
-          # Write 100% compatible main.dart matching the exact verified signatures of all 8 files
           cat << 'EOF' > lib_collected/main.dart
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
@@ -297,12 +305,10 @@ jobs:
           }
           EOF
 
-          # Clean unnecessary import in share_card_studio.dart
           sed -i "/import 'dart:typed_data';/d" lib_collected/share_card_studio.dart
           sed -i 's/0xGGG/0xFFF/g' lib_collected/*.dart
           sed -i "s|import 'package:intl/intl.dart';|import 'package:intl/intl.dart' hide TextDirection;|g" lib_collected/*.dart
 
-          # Generate clean pubspec.yaml
           cat << 'EOF' > pubspec_clean.yaml
           name: rukn_app
           description: "رُكْن - المفكرة العربية والمنظم اليومي الفاخر"
@@ -393,7 +399,6 @@ jobs:
                   - asset: assets/fonts/ReemKufi-Regular.ttf
           EOF
 
-          # Sync repaired files back to the repository so future edits are always clean
           mkdir -p lib
           cp lib_collected/*.dart lib/
           cp pubspec_clean.yaml pubspec.yaml
@@ -405,7 +410,6 @@ jobs:
             git push || true
           fi
 
-          # Create fresh Flutter Android shell for build
           rm -rf lib android ios web linux macos windows test pubspec.yaml pubspec.lock
           flutter create --org com.rukn --project-name rukn_app --platforms=android .
 
@@ -667,6 +671,9 @@ jobs:
           EOF
 
           sed -i 's/com.rukn.rukn_app/com.rukn.app/g' android/app/build.gradle
+          if [ -f "android/build.gradle" ]; then
+            sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.8.22'/g" android/build.gradle || true
+          fi
 
           cat << 'EOF' >> android/app/build.gradle
 
@@ -694,6 +701,10 @@ jobs:
                   }
               }
           }
+
+          dependencies {
+              implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+          }
           EOF
 
       - name: Build Signed Release APK
@@ -707,7 +718,6 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk Rukn_Luxury_App.apk
           cp build/app/outputs/flutter-apk/app-release.apk Rukn_Luxury_App_v1.0.0.apk
 
-          # Publish raw .apk to GitHub Releases so user can download without unzipping
           gh release create latest Rukn_Luxury_App.apk \
             --title "تطبيق رُكْن - أحدث نسخة جاهزة (APK مباشر)" \
             --notes "اضغط على ملف Rukn_Luxury_App.apk بالأسفل لتحميله وتثبيته مباشرة بدون فك ضغط." \
