@@ -1,6 +1,7 @@
 name: Build Rukn Luxury App APK
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -24,15 +25,199 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Locate Dart Files & Generate pubspec.yaml Automatically
+      - name: Smart Locate All Dart Files Across Any Folder Depth
         run: |
+          echo "=== Current Repository Files ==="
+          find . -not -path '*/.*'
+          echo "================================"
+
           mkdir -p lib_collected
-          for f in main.dart gulf_themes.dart luxury_ui.dart storage_vault.dart smart_arabic_engine.dart share_card_studio.dart home_screen.dart editor_screen.dart settings_screen.dart; do
-            found_file=$(find . -maxdepth 3 -name "$f" | head -n 1)
-            if [ -n "$found_file" ]; then
-              cp "$found_file" "lib_collected/$f"
+
+          # دالة ذكية تبحث عن الملف بالاسم في أي عمق، فإن لم تجده تبحث عنه بمحتواه البرمجي
+          locate_dart_file() {
+            local target_name="$1"
+            local signature="$2"
+            local found=""
+
+            found=$(find . -not -path '*/.*' -not -path './lib_collected*' -iname "$target_name" | head -n 1)
+            if [ -z "$found" ]; then
+              found=$(grep -rl --exclude-dir=".git" --exclude-dir=".github" --exclude-dir="lib_collected" "$signature" . | head -n 1 || true)
+            fi
+
+            if [ -n "$found" ]; then
+              echo "Found $target_name at: $found"
+              cp "$found" "lib_collected/$target_name"
             else
-              echo "ERROR: Missing Dart file: $f"
+              echo "WARNING: Could not find $target_name"
+            fi
+          }
+
+          locate_dart_file "main.dart" "class RuknLuxuryApp"
+          locate_dart_file "gulf_themes.dart" "class AppSettingsController"
+          locate_dart_file "luxury_ui.dart" "class RuknSpringButton"
+          locate_dart_file "storage_vault.dart" "class StorageVaultController"
+          locate_dart_file "smart_arabic_engine.dart" "class SmartArabicEngine"
+          locate_dart_file "share_card_studio.dart" "showRuknShareCardStudio"
+          locate_dart_file "home_screen.dart" "class RuknHomeScreen"
+          locate_dart_file "editor_screen.dart" "class RuknEditorScreen"
+          locate_dart_file "settings_screen.dart" "class RuknSettingsScreen"
+
+          # إذا كان main.dart غير موجود، يتم إنشاؤه تلقائياً بالكامل
+          if [ ! -f "lib_collected/main.dart" ]; then
+            echo "Generating main.dart automatically..."
+            cat << 'EOF' > lib_collected/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:flutter_localizations/flutter_localizations.dart';
+
+          import 'gulf_themes.dart';
+          import 'luxury_ui.dart';
+          import 'storage_vault.dart';
+          import 'home_screen.dart';
+
+          void main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+
+            SystemChrome.setSystemUIOverlayStyle(
+              const SystemUiOverlayStyle(
+                statusBarColor: Colors.transparent,
+                statusBarIconBrightness: Brightness.light,
+                systemNavigationBarColor: Colors.transparent,
+                systemNavigationBarIconBrightness: Brightness.dark,
+              ),
+            );
+
+            final settingsController = AppSettingsController();
+            await settingsController.loadSettings();
+
+            final vaultController = StorageVaultController();
+            await vaultController.initializeVault();
+
+            runApp(
+              RuknLuxuryApp(
+                settings: settingsController,
+                vault: vaultController,
+              ),
+            );
+          }
+
+          class RuknLuxuryApp extends StatefulWidget {
+            final AppSettingsController settings;
+            final StorageVaultController vault;
+
+            const RuknLuxuryApp({
+              super.key,
+              required this.settings,
+              required this.vault,
+            });
+
+            @override
+            State<RuknLuxuryApp> createState() => _RuknLuxuryAppState();
+          }
+
+          class _RuknLuxuryAppState extends State<RuknLuxuryApp>
+              with WidgetsBindingObserver {
+            bool _isAppLocked = false;
+
+            @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addObserver(this);
+              widget.settings.addListener(_onSettingsChanged);
+              widget.vault.addListener(_onSettingsChanged);
+
+              if (widget.settings.lockWholeAppOnStart &&
+                  widget.settings.pinCode.isNotEmpty) {
+                _isAppLocked = true;
+              }
+            }
+
+            @override
+            void dispose() {
+              WidgetsBinding.instance.removeObserver(this);
+              widget.settings.removeListener(_onSettingsChanged);
+              widget.vault.removeListener(_onSettingsChanged);
+              super.dispose();
+            }
+
+            void _onSettingsChanged() {
+              if (mounted) {
+                setState(() {});
+              }
+            }
+
+            @override
+            void didChangeAppLifecycleState(AppLifecycleState state) {
+              super.didChangeAppLifecycleState(state);
+              if (state == AppLifecycleState.paused) {
+                if (widget.settings.lockWholeAppOnStart &&
+                    widget.settings.pinCode.isNotEmpty) {
+                  setState(() {
+                    _isAppLocked = true;
+                  });
+                }
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final activeTheme = widget.settings.activeTheme;
+              final fontFamily = widget.settings.activeFontFamily;
+
+              return MaterialApp(
+                title: 'رُكْن',
+                debugShowCheckedModeBanner: false,
+                locale: const Locale('ar', 'SA'),
+                supportedLocales: const [
+                  Locale('ar', 'SA'),
+                  Locale('en', 'US'),
+                ],
+                localizationsDelegates: const [
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                theme: GulfThemes.buildMaterialTheme(
+                  gulfTheme: activeTheme,
+                  isDarkMode: widget.settings.isDarkMode,
+                  fontFamily: fontFamily,
+                ),
+                builder: (context, child) {
+                  return Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: MediaQuery(
+                      data: MediaQuery.of(context).copyWith(
+                        textScaler: const TextScaler.linear(1.0),
+                      ),
+                      child: child ?? const SizedBox.shrink(),
+                    ),
+                  );
+                },
+                home: _isAppLocked
+                    ? RuknPinLockScreen(
+                        settings: widget.settings,
+                        title: 'مرحباً بك في ${widget.settings.fullPersonalHeaderTitle}',
+                        subtitle: 'أدخل رمز الحماية لفتح ركنك الخاص',
+                        onUnlocked: () {
+                          setState(() {
+                            _isAppLocked = false;
+                          });
+                        },
+                      )
+                    : RuknHomeScreen(
+                        settings: widget.settings,
+                        vault: widget.vault,
+                      ),
+              );
+            }
+          }
+          EOF
+          fi
+
+          # التحقق من وجود جميع الملفات في lib_collected
+          for req in main.dart gulf_themes.dart luxury_ui.dart storage_vault.dart smart_arabic_engine.dart share_card_studio.dart home_screen.dart editor_screen.dart settings_screen.dart; do
+            if [ ! -f "lib_collected/$req" ]; then
+              echo "ERROR: File $req is still missing from the repository! Please create it."
               exit 1
             fi
           done
@@ -144,8 +329,7 @@ jobs:
           download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Bold.ttf" "ibm_plex_arabic_bold.ttf"
           download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Regular.ttf" "aref_ruqaa.ttf"
           download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Bold.ttf" "aref_ruqaa_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/reemkufi/ReemKufi%5Bwght%5D.ttf" "reemkufi.ttf"
-          cp assets/fonts/reemkufi.ttf assets/fonts/reem_kufi.ttf || true
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/reemkufi/ReemKufi%5Bwght%5D.ttf" "reem_kufi.ttf"
 
       - name: Restore or Generate Fixed Signing Keystore for Rukn
         uses: actions/cache@v4
