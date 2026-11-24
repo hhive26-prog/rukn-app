@@ -148,7 +148,7 @@ jobs:
                       count=1
                   )
 
-              # 1b. Add RkNumberCalcResult helper class if not present
+              # 1b. Add RkNumberCalcResult helper class with formattedReport
               if "class RkNumberCalcResult" not in sae:
                   calc_cls = '''
           class RkNumberCalcResult {
@@ -183,6 +183,7 @@ jobs:
                 ? 'لا توجد أرقام في النص المحدد'
                 : 'العدد: ' + count.toString() + ' | المجموع: ' + formattedSum + ' | المتوسط: ' + formattedAverage + ' | الأعلى: ' + formattedMax + ' | الأدنى: ' + formattedMin;
 
+            String get formattedReport => summary;
             String get report => summary;
             String get formatted => summary;
             String get text => summary;
@@ -386,7 +387,6 @@ jobs:
             static RkNumberCalcResult calculateNumbersInText(String text) => _rkAnalyzeNums(text);
           '''
 
-              # Insert bridge_methods inside SmartArabicEngine class
               m_engine = re.search(r"class\s+SmartArabicEngine\s*\{", sae)
               if m_engine:
                   insert_pos = m_engine.end()
@@ -509,7 +509,6 @@ jobs:
               hs = hs.replace("showRuknToast(context, s, msg);", "showRuknToast(context, s, msg ?? 'تمت العملية بنجاح');")
               hs = re.sub(r"(\n\s*)created,(\s*\n)", r"\1created!,\2", hs)
 
-              # If SettingsScreen in settings_screen.dart requires onOpenToolbarCustomizer, pass a no-op callback
               if os.path.exists("lib/settings_screen.dart"):
                   with open("lib/settings_screen.dart", "r", encoding="utf-8") as fss:
                       ss_content = fss.read()
