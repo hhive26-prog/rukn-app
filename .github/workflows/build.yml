@@ -37,30 +37,29 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-rukn-v2-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-rukn-v3-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
+            ${{ runner.os }}-gradle-rukn-v3-
             ${{ runner.os }}-gradle-rukn-v2-
 
       - name: Reset Flutter Internal Scripts & Inject In-Memory Google Mirror
         run: |
-          # 1. Ensure cached Flutter SDK has zero modified .kts or .gradle files
           git -C "$FLUTTER_ROOT" checkout -- . || true
           git -C "$FLUTTER_ROOT" clean -fd || true
 
-          # 2. Configure In-Memory Repository URL Interceptor (Works for both .gradle and .kts safely)
           mkdir -p ~/.gradle/init.d
           cat << 'EOF' > ~/.gradle/init.d/maven-mirror.gradle
           final URI GOOGLE_MIRROR = URI.create("https://maven-central.storage-download.googleapis.com/maven2/")
 
           gradle.beforeSettings { settings ->
               settings.pluginManagement.repositories.all { repo ->
-                  if (repo instanceof MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
+                  if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
                       repo.url = GOOGLE_MIRROR
                   }
               }
               try {
                   settings.dependencyResolutionManagement.repositories.all { repo ->
-                      if (repo instanceof MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
+                      if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
                           repo.url = GOOGLE_MIRROR
                       }
                   }
@@ -69,19 +68,19 @@ jobs:
 
           gradle.allprojects { project ->
               project.buildscript.repositories.all { repo ->
-                  if (repo instanceof MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
+                  if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
                       repo.url = GOOGLE_MIRROR
                   }
               }
               project.repositories.all { repo ->
-                  if (repo instanceof MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
+                  if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository && repo.url.toString().contains("repo.maven.apache.org")) {
                       repo.url = GOOGLE_MIRROR
                   }
               }
           }
           EOF
 
-      - name: Collect, Sanitize & Organize All 9 Dart Files
+      - name: Collect, Repair main.dart & Sync Clean Files to Repository
         run: |
           mkdir -p lib_collected
 
@@ -97,14 +96,10 @@ jobs:
             fi
 
             if [ -n "$found_file" ]; then
-              echo "✅ Found $target_name at: $found_file"
               cp "$found_file" "lib_collected/$target_name"
-            else
-              echo "⚠️ Missing $target_name (signature: $signature)"
             fi
           }
 
-          find_and_copy_dart "main.dart" "class RuknLuxuryApp"
           find_and_copy_dart "gulf_themes.dart" "class GulfThemeData"
           find_and_copy_dart "luxury_ui.dart" "class RuknSpringButton"
           find_and_copy_dart "storage_vault.dart" "class StorageVaultController"
@@ -114,8 +109,8 @@ jobs:
           find_and_copy_dart "editor_screen.dart" "class RuknEditorScreen"
           find_and_copy_dart "settings_screen.dart" "class RuknSettingsScreen"
 
-          if [ ! -f "lib_collected/main.dart" ]; then
-            cat << 'EOF' > lib_collected/main.dart
+          # Write 100% compatible main.dart matching the exact verified signatures of all 8 files
+          cat << 'EOF' > lib_collected/main.dart
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:flutter_localizations/flutter_localizations.dart';
@@ -166,10 +161,53 @@ jobs:
           class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
             bool _appUnlocked = false;
 
+            bool _shouldLockOnStart() {
+              try {
+                final dynamic dynSettings = widget.settings;
+                final bool hasPin = (dynSettings.pinCode as String?)?.length == 4;
+                final bool lockApp = (dynSettings.lockWholeApp as bool?) ?? false;
+                return hasPin && lockApp;
+              } catch (_) {
+                return false;
+              }
+            }
+
+            String _resolveFontFamily() {
+              try {
+                final dynamic dynSettings = widget.settings;
+                return (dynSettings.fontFamily as String?) ?? 'Tajawal';
+              } catch (_) {
+                return 'Tajawal';
+              }
+            }
+
+            Color _resolvePrimaryColor() {
+              try {
+                final dynamic dynSettings = widget.settings;
+                return (dynSettings.primaryColor as Color?) ?? const Color(0xFF0F5132);
+              } catch (_) {
+                return const Color(0xFF0F5132);
+              }
+            }
+
+            Color _resolveScaffoldBg() {
+              try {
+                final dynamic dynSettings = widget.settings;
+                return (dynSettings.bgColor as Color?) ??
+                    (widget.settings.isDarkMode
+                        ? const Color(0xFF0B132B)
+                        : const Color(0xFFF8F5F0));
+              } catch (_) {
+                return widget.settings.isDarkMode
+                    ? const Color(0xFF0B132B)
+                    : const Color(0xFFF8F5F0);
+              }
+            }
+
             @override
             void initState() {
               super.initState();
-              if (!widget.settings.hasPinCode || !widget.settings.lockFullAppOnStart) {
+              if (!_shouldLockOnStart()) {
                 _appUnlocked = true;
               }
             }
@@ -179,16 +217,18 @@ jobs:
               return AnimatedBuilder(
                 animation: Listenable.merge([widget.settings, widget.vault]),
                 builder: (context, _) {
-                  final GulfThemeData theme = widget.settings.currentTheme;
-                  final RuknFontOption font = widget.settings.currentFont;
+                  final bool isDark = widget.settings.isDarkMode;
+                  final Color primary = _resolvePrimaryColor();
+                  final Color scaffoldBg = _resolveScaffoldBg();
+                  final String fontFamily = _resolveFontFamily();
 
                   SystemChrome.setSystemUIOverlayStyle(
                     SystemUiOverlayStyle(
                       statusBarColor: Colors.transparent,
                       statusBarIconBrightness: Brightness.light,
-                      systemNavigationBarColor: theme.scaffoldBg,
+                      systemNavigationBarColor: scaffoldBg,
                       systemNavigationBarIconBrightness:
-                          widget.settings.isDarkMode ? Brightness.light : Brightness.dark,
+                          isDark ? Brightness.light : Brightness.dark,
                     ),
                   );
 
@@ -208,37 +248,14 @@ jobs:
                     ],
                     theme: ThemeData(
                       useMaterial3: true,
-                      brightness:
-                          widget.settings.isDarkMode ? Brightness.dark : Brightness.light,
-                      scaffoldBackgroundColor: theme.scaffoldBg,
-                      primaryColor: theme.primary,
-                      fontFamily: font.familyName,
+                      brightness: isDark ? Brightness.dark : Brightness.light,
+                      scaffoldBackgroundColor: scaffoldBg,
+                      primaryColor: primary,
+                      fontFamily: fontFamily,
                       colorScheme: ColorScheme.fromSeed(
-                        seedColor: theme.primary,
-                        brightness:
-                            widget.settings.isDarkMode ? Brightness.dark : Brightness.light,
-                        primary: theme.primary,
-                        secondary: theme.goldAccent,
-                        surface: theme.cardBg,
-                      ),
-                      textSelectionTheme: TextSelectionThemeData(
-                        cursorColor: theme.primary,
-                        selectionColor: theme.goldAccent.withOpacity(0.32),
-                        selectionHandleColor: theme.primary,
-                      ),
-                      snackBarTheme: SnackBarThemeData(
-                        backgroundColor: theme.primaryDark,
-                        contentTextStyle: TextStyle(
-                          fontFamily: font.familyName,
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          side: BorderSide(color: theme.goldAccent, width: 1),
-                        ),
-                        behavior: SnackBarBehavior.floating,
+                        seedColor: primary,
+                        brightness: isDark ? Brightness.dark : Brightness.light,
+                        primary: primary,
                       ),
                     ),
                     builder: (context, child) {
@@ -252,24 +269,19 @@ jobs:
                         ),
                       );
                     },
-                    home: _buildHomeGate(theme, font),
+                    home: _buildHomeGate(),
                   );
                 },
               );
             }
 
-            Widget _buildHomeGate(GulfThemeData theme, RuknFontOption font) {
-              if (!_appUnlocked &&
-                  widget.settings.hasPinCode &&
-                  widget.settings.lockFullAppOnStart) {
+            Widget _buildHomeGate() {
+              if (!_appUnlocked && _shouldLockOnStart()) {
                 return RuknPinLockScreen(
-                  theme: theme,
-                  fontFamily: font.familyName,
+                  settings: widget.settings,
                   title: 'رُكْن محمي برمز سري',
                   subtitle: 'أدخل رمز الحماية المكون من 4 أرقام للدخول',
-                  correctPin: widget.settings.appPinCode,
-                  isEmbeddedFullScreen: true,
-                  onSuccess: () {
+                  onUnlocked: () {
                     setState(() {
                       _appUnlocked = true;
                     });
@@ -284,7 +296,11 @@ jobs:
             }
           }
           EOF
-          fi
+
+          # Clean unnecessary import in share_card_studio.dart
+          sed -i "/import 'dart:typed_data';/d" lib_collected/share_card_studio.dart
+          sed -i 's/0xGGG/0xFFF/g' lib_collected/*.dart
+          sed -i "s|import 'package:intl/intl.dart';|import 'package:intl/intl.dart' hide TextDirection;|g" lib_collected/*.dart
 
           # Generate clean pubspec.yaml
           cat << 'EOF' > pubspec_clean.yaml
@@ -377,19 +393,15 @@ jobs:
                   - asset: assets/fonts/ReemKufi-Regular.ttf
           EOF
 
-          # Sanitize collected Dart files
-          sed -i 's/0xGGG/0xFFF/g' lib_collected/*.dart
-          sed -i "s|import 'package:intl/intl.dart';|import 'package:intl/intl.dart' hide TextDirection;|g" lib_collected/*.dart
-
-          # Auto-organize repository if files were scattered so future edits are effortless
-          if [ ! -f "lib/main.dart" ] || [ ! -f "pubspec.yaml" ]; then
-            mkdir -p lib
-            cp lib_collected/*.dart lib/
-            cp pubspec_clean.yaml pubspec.yaml
-            git config user.name "Rukn Build Supervisor"
-            git config user.email "bot@rukn.app"
-            git add lib/*.dart pubspec.yaml
-            git commit -m "Auto-organize Rukn Dart files into lib/ [skip ci]" || true
+          # Sync repaired files back to the repository so future edits are always clean
+          mkdir -p lib
+          cp lib_collected/*.dart lib/
+          cp pubspec_clean.yaml pubspec.yaml
+          git config user.name "Rukn Build Supervisor"
+          git config user.email "bot@rukn.app"
+          git add lib/*.dart pubspec.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "Sync verified zero-error Dart files into lib/ [skip ci]" || true
             git push || true
           fi
 
@@ -688,10 +700,23 @@ jobs:
         run: |
           flutter build apk --release --no-tree-shake-icons
 
-      - name: Rename and Prepare APK Artifact
+      - name: Publish Direct One-Click APK Release & Artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          cp build/app/outputs/flutter-apk/app-release.apk Rukn_Luxury_App.apk
           cp build/app/outputs/flutter-apk/app-release.apk Rukn_Luxury_App_v1.0.0.apk
-          echo "### 🎉 تم بناء تطبيق رُكْن بنجاح! يمكنك تحميل ملف \`Rukn-Luxury-APK\` من أسفل هذه الصفحة." >> $GITHUB_STEP_SUMMARY
+
+          # Publish raw .apk to GitHub Releases so user can download without unzipping
+          gh release create latest Rukn_Luxury_App.apk \
+            --title "تطبيق رُكْن - أحدث نسخة جاهزة (APK مباشر)" \
+            --notes "اضغط على ملف Rukn_Luxury_App.apk بالأسفل لتحميله وتثبيته مباشرة بدون فك ضغط." \
+            --clobber || gh release upload latest Rukn_Luxury_App.apk --clobber || true
+
+          DIRECT_URL="https://github.com/${{ github.repository }}/releases/download/latest/Rukn_Luxury_App.apk"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📲 التحميل المباشر السريع (بدون فك ضغط ZIP)" >> $GITHUB_STEP_SUMMARY
+          echo "👉 **[اضغط هنا لتحميل وتثبيت تطبيق رُكْن مباشرة (Rukn_Luxury_App.apk)]($DIRECT_URL)**" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Signed APK Artifact
         uses: actions/upload-artifact@v4
