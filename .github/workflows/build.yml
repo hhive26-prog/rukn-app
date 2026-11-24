@@ -1,12 +1,15 @@
-name: Build Rukn Luxury App APK
+name: Build Rukn Luxury APK
 
 on:
   push:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-apk:
+    name: Build Signed Release APK (Rukn - رُكْن)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
@@ -15,8 +18,8 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: 'temurin'
+          java-version: '17'
 
       - name: Set up Flutter Stable
         uses: subosito/flutter-action@v2
@@ -25,46 +28,79 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Smart Locate All Dart Files Across Any Folder Depth
+      - name: Configure Global Google Mirror for Maven Central (Prevents HTTP 429)
         run: |
-          echo "=== Current Repository Files ==="
-          find . -not -path '*/.*'
-          echo "================================"
+          mkdir -p ~/.gradle/init.d
+          cat << 'EOF' > ~/.gradle/init.d/maven-mirrors.gradle
+          allprojects {
+              buildscript {
+                  repositories {
+                      maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+                      google()
+                      mavenCentral()
+                  }
+              }
+              repositories {
+                  maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+                  google()
+                  mavenCentral()
+              }
+          }
+          settingsEvaluated { settings ->
+              settings.pluginManagement {
+                  repositories {
+                      maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+                      google()
+                      gradlePluginPortal()
+                      mavenCentral()
+                  }
+              }
+          }
+          EOF
+
+          # Patch Flutter internal gradle scripts so :gradle:compileGroovy never hits 429
+          if [ -d "$FLUTTER_ROOT/packages/flutter_tools/gradle" ]; then
+            find "$FLUTTER_ROOT/packages/flutter_tools/gradle" -name "*.gradle*" -exec sed -i 's|mavenCentral()|maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }\n        mavenCentral()|g' {} +
+          fi
+
+      - name: Locate & Organize All Dart Files & Generate pubspec.yaml
+        run: |
+          echo "=== Scanning Repository Structure ==="
+          find . -maxdepth 5 -not -path '*/.*'
 
           mkdir -p lib_collected
 
-          # دالة ذكية تبحث عن الملف بالاسم في أي عمق، فإن لم تجده تبحث عنه بمحتواه البرمجي
-          locate_dart_file() {
+          find_and_copy_dart() {
             local target_name="$1"
             local signature="$2"
-            local found=""
+            local found_file=""
 
-            found=$(find . -not -path '*/.*' -not -path './lib_collected*' -iname "$target_name" | head -n 1)
-            if [ -z "$found" ]; then
-              found=$(grep -rl --exclude-dir=".git" --exclude-dir=".github" --exclude-dir="lib_collected" "$signature" . | head -n 1 || true)
+            found_file=$(find . -not -path '*/.*' -not -path './lib_collected*' -type f -iname "$target_name" | head -n 1)
+
+            if [ -z "$found_file" ] && [ -n "$signature" ]; then
+              found_file=$(grep -rl "$signature" . --exclude-dir=".git" --exclude-dir=".github" --exclude-dir="lib_collected" 2>/dev/null | head -n 1)
             fi
 
-            if [ -n "$found" ]; then
-              echo "Found $target_name at: $found"
-              cp "$found" "lib_collected/$target_name"
+            if [ -n "$found_file" ]; then
+              echo "Found $target_name at: $found_file"
+              cp "$found_file" "lib_collected/$target_name"
             else
-              echo "WARNING: Could not find $target_name"
+              echo "WARNING: Could not find $target_name by name or signature ($signature)"
             fi
           }
 
-          locate_dart_file "main.dart" "class RuknLuxuryApp"
-          locate_dart_file "gulf_themes.dart" "class AppSettingsController"
-          locate_dart_file "luxury_ui.dart" "class RuknSpringButton"
-          locate_dart_file "storage_vault.dart" "class StorageVaultController"
-          locate_dart_file "smart_arabic_engine.dart" "class SmartArabicEngine"
-          locate_dart_file "share_card_studio.dart" "showRuknShareCardStudio"
-          locate_dart_file "home_screen.dart" "class RuknHomeScreen"
-          locate_dart_file "editor_screen.dart" "class RuknEditorScreen"
-          locate_dart_file "settings_screen.dart" "class RuknSettingsScreen"
+          find_and_copy_dart "main.dart" "class RuknLuxuryApp"
+          find_and_copy_dart "gulf_themes.dart" "class GulfThemeData"
+          find_and_copy_dart "luxury_ui.dart" "class RuknSpringButton"
+          find_and_copy_dart "storage_vault.dart" "class StorageVaultController"
+          find_and_copy_dart "smart_arabic_engine.dart" "class SmartArabicEngine"
+          find_and_copy_dart "share_card_studio.dart" "showRuknShareCardStudio"
+          find_and_copy_dart "home_screen.dart" "class RuknHomeScreen"
+          find_and_copy_dart "editor_screen.dart" "class RuknEditorScreen"
+          find_and_copy_dart "settings_screen.dart" "class RuknSettingsScreen"
 
-          # إذا كان main.dart غير موجود، يتم إنشاؤه تلقائياً بالكامل
           if [ ! -f "lib_collected/main.dart" ]; then
-            echo "Generating main.dart automatically..."
+            echo "Auto-generating lib_collected/main.dart..."
             cat << 'EOF' > lib_collected/main.dart
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
@@ -78,25 +114,23 @@ jobs:
           void main() async {
             WidgetsFlutterBinding.ensureInitialized();
 
-            SystemChrome.setSystemUIOverlayStyle(
-              const SystemUiOverlayStyle(
-                statusBarColor: Colors.transparent,
-                statusBarIconBrightness: Brightness.light,
-                systemNavigationBarColor: Colors.transparent,
-                systemNavigationBarIconBrightness: Brightness.dark,
-              ),
-            );
+            await SystemChrome.setPreferredOrientations([
+              DeviceOrientation.portraitUp,
+              DeviceOrientation.portraitDown,
+              DeviceOrientation.landscapeLeft,
+              DeviceOrientation.landscapeRight,
+            ]);
 
-            final settingsController = AppSettingsController();
-            await settingsController.loadSettings();
+            final settings = AppSettingsController();
+            await settings.loadSettings();
 
-            final vaultController = StorageVaultController();
-            await vaultController.initializeVault();
+            final vault = StorageVaultController();
+            await vault.initializeVault();
 
             runApp(
               RuknLuxuryApp(
-                settings: settingsController,
-                vault: vaultController,
+                settings: settings,
+                vault: vault,
               ),
             );
           }
@@ -115,123 +149,143 @@ jobs:
             State<RuknLuxuryApp> createState() => _RuknLuxuryAppState();
           }
 
-          class _RuknLuxuryAppState extends State<RuknLuxuryApp>
-              with WidgetsBindingObserver {
-            bool _isAppLocked = false;
+          class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
+            bool _appUnlocked = false;
 
             @override
             void initState() {
               super.initState();
-              WidgetsBinding.instance.addObserver(this);
-              widget.settings.addListener(_onSettingsChanged);
-              widget.vault.addListener(_onSettingsChanged);
-
-              if (widget.settings.lockWholeAppOnStart &&
-                  widget.settings.pinCode.isNotEmpty) {
-                _isAppLocked = true;
-              }
-            }
-
-            @override
-            void dispose() {
-              WidgetsBinding.instance.removeObserver(this);
-              widget.settings.removeListener(_onSettingsChanged);
-              widget.vault.removeListener(_onSettingsChanged);
-              super.dispose();
-            }
-
-            void _onSettingsChanged() {
-              if (mounted) {
-                setState(() {});
-              }
-            }
-
-            @override
-            void didChangeAppLifecycleState(AppLifecycleState state) {
-              super.didChangeAppLifecycleState(state);
-              if (state == AppLifecycleState.paused) {
-                if (widget.settings.lockWholeAppOnStart &&
-                    widget.settings.pinCode.isNotEmpty) {
-                  setState(() {
-                    _isAppLocked = true;
-                  });
-                }
+              if (!widget.settings.hasPinCode || !widget.settings.lockFullAppOnStart) {
+                _appUnlocked = true;
               }
             }
 
             @override
             Widget build(BuildContext context) {
-              final activeTheme = widget.settings.activeTheme;
-              final fontFamily = widget.settings.activeFontFamily;
+              return AnimatedBuilder(
+                animation: Listenable.merge([widget.settings, widget.vault]),
+                builder: (context, _) {
+                  final GulfThemeData theme = widget.settings.currentTheme;
+                  final RuknFontOption font = widget.settings.currentFont;
 
-              return MaterialApp(
-                title: 'رُكْن',
-                debugShowCheckedModeBanner: false,
-                locale: const Locale('ar', 'SA'),
-                supportedLocales: const [
-                  Locale('ar', 'SA'),
-                  Locale('en', 'US'),
-                ],
-                localizationsDelegates: const [
-                  GlobalMaterialLocalizations.delegate,
-                  GlobalWidgetsLocalizations.delegate,
-                  GlobalCupertinoLocalizations.delegate,
-                ],
-                theme: GulfThemes.buildMaterialTheme(
-                  gulfTheme: activeTheme,
-                  isDarkMode: widget.settings.isDarkMode,
-                  fontFamily: fontFamily,
-                ),
-                builder: (context, child) {
-                  return Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: MediaQuery(
-                      data: MediaQuery.of(context).copyWith(
-                        textScaler: const TextScaler.linear(1.0),
-                      ),
-                      child: child ?? const SizedBox.shrink(),
+                  SystemChrome.setSystemUIOverlayStyle(
+                    SystemUiOverlayStyle(
+                      statusBarColor: Colors.transparent,
+                      statusBarIconBrightness: Brightness.light,
+                      systemNavigationBarColor: theme.scaffoldBg,
+                      systemNavigationBarIconBrightness:
+                          widget.settings.isDarkMode ? Brightness.light : Brightness.dark,
                     ),
                   );
-                },
-                home: _isAppLocked
-                    ? RuknPinLockScreen(
-                        settings: widget.settings,
-                        title: 'مرحباً بك في ${widget.settings.fullPersonalHeaderTitle}',
-                        subtitle: 'أدخل رمز الحماية لفتح ركنك الخاص',
-                        onUnlocked: () {
-                          setState(() {
-                            _isAppLocked = false;
-                          });
-                        },
-                      )
-                    : RuknHomeScreen(
-                        settings: widget.settings,
-                        vault: widget.vault,
+
+                  return MaterialApp(
+                    title: 'رُكْن',
+                    debugShowCheckedModeBanner: false,
+                    locale: const Locale('ar', 'SA'),
+                    supportedLocales: const [
+                      Locale('ar', 'SA'),
+                      Locale('ar'),
+                      Locale('en', 'US'),
+                    ],
+                    localizationsDelegates: const [
+                      GlobalMaterialLocalizations.delegate,
+                      GlobalWidgetsLocalizations.delegate,
+                      GlobalCupertinoLocalizations.delegate,
+                    ],
+                    theme: ThemeData(
+                      useMaterial3: true,
+                      brightness:
+                          widget.settings.isDarkMode ? Brightness.dark : Brightness.light,
+                      scaffoldBackgroundColor: theme.scaffoldBg,
+                      primaryColor: theme.primary,
+                      fontFamily: font.familyName,
+                      colorScheme: ColorScheme.fromSeed(
+                        seedColor: theme.primary,
+                        brightness:
+                            widget.settings.isDarkMode ? Brightness.dark : Brightness.light,
+                        primary: theme.primary,
+                        secondary: theme.goldAccent,
+                        surface: theme.cardBg,
                       ),
+                      textSelectionTheme: TextSelectionThemeData(
+                        cursorColor: theme.primary,
+                        selectionColor: theme.goldAccent.withOpacity(0.32),
+                        selectionHandleColor: theme.primary,
+                      ),
+                      snackBarTheme: SnackBarThemeData(
+                        backgroundColor: theme.primaryDark,
+                        contentTextStyle: TextStyle(
+                          fontFamily: font.familyName,
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          side: BorderSide(color: theme.goldAccent, width: 1),
+                        ),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    ),
+                    builder: (context, child) {
+                      return Directionality(
+                        textDirection: TextDirection.rtl,
+                        child: MediaQuery(
+                          data: MediaQuery.of(context).copyWith(
+                            textScaler: const TextScaler.linear(1.0),
+                          ),
+                          child: child ?? const SizedBox.shrink(),
+                        ),
+                      );
+                    },
+                    home: _buildHomeGate(theme, font),
+                  );
+                },
+              );
+            }
+
+            Widget _buildHomeGate(GulfThemeData theme, RuknFontOption font) {
+              if (!_appUnlocked &&
+                  widget.settings.hasPinCode &&
+                  widget.settings.lockFullAppOnStart) {
+                return RuknPinLockScreen(
+                  theme: theme,
+                  fontFamily: font.familyName,
+                  title: 'رُكْن محمي برمز سري',
+                  subtitle: 'أدخل رمز الحماية المكون من 4 أرقام للدخول',
+                  correctPin: widget.settings.appPinCode,
+                  isEmbeddedFullScreen: true,
+                  onSuccess: () {
+                    setState(() {
+                      _appUnlocked = true;
+                    });
+                  },
+                );
+              }
+
+              return RuknHomeScreen(
+                settings: widget.settings,
+                vault: widget.vault,
               );
             }
           }
           EOF
           fi
 
-          # التحقق من وجود جميع الملفات في lib_collected
-          for req in main.dart gulf_themes.dart luxury_ui.dart storage_vault.dart smart_arabic_engine.dart share_card_studio.dart home_screen.dart editor_screen.dart settings_screen.dart; do
-            if [ ! -f "lib_collected/$req" ]; then
-              echo "ERROR: File $req is still missing from the repository! Please create it."
+          # Verify all 9 files exist in lib_collected
+          for req_file in main.dart gulf_themes.dart luxury_ui.dart storage_vault.dart smart_arabic_engine.dart share_card_studio.dart home_screen.dart editor_screen.dart settings_screen.dart; do
+            if [ ! -f "lib_collected/$req_file" ]; then
+              echo "ERROR: Missing Dart file: $req_file"
               exit 1
             fi
           done
 
-          # تنظيف أي علامات اقتباس وتصحيح أي كود لون تلقائياً
-          find lib_collected -name "*.dart" -type f -exec sed -i '/^\x60/d' {} +
-          find lib_collected -name "*.dart" -type f -exec sed -i 's/0xGGG/0xFFF/g' {} +
-
-          # إنشاء ملف pubspec.yaml نظيف ومضمون 100%
+          # Generate clean pubspec.yaml
           cat << 'EOF' > pubspec_clean.yaml
           name: rukn_app
-          description: "رُكْن — مساحتك الخاصة لتدوين الفكر وتنظيم اليوم بهوية خليجية فاخرة"
+          description: "رُكْن - المفكرة العربية والمنظم اليومي الفاخر"
           publish_to: 'none'
-          version: 1.0.0+100
+          version: 1.0.0+1
 
           environment:
             sdk: '>=3.2.0 <4.0.0'
@@ -245,7 +299,8 @@ jobs:
             path_provider: ^2.1.2
             share_plus: ^7.2.2
             archive: ^3.4.10
-            intl: any
+            intl: ^0.18.1
+            path: ^1.8.3
 
           dev_dependencies:
             flutter_test:
@@ -253,91 +308,129 @@ jobs:
 
           flutter:
             uses-material-design: true
-
             assets:
               - assets/fonts/
 
             fonts:
               - family: Tajawal
                 fonts:
-                  - asset: assets/fonts/tajawal_regular.ttf
-                  - asset: assets/fonts/tajawal_bold.ttf
+                  - asset: assets/fonts/Tajawal-Regular.ttf
+                  - asset: assets/fonts/Tajawal-Bold.ttf
+                    weight: 700
+              - family: Cairo
+                fonts:
+                  - asset: assets/fonts/Cairo-Regular.ttf
+                  - asset: assets/fonts/Cairo-Bold.ttf
                     weight: 700
               - family: Almarai
                 fonts:
-                  - asset: assets/fonts/almarai_regular.ttf
-                  - asset: assets/fonts/almarai_bold.ttf
+                  - asset: assets/fonts/Almarai-Regular.ttf
+                  - asset: assets/fonts/Almarai-Bold.ttf
+                    weight: 700
+              - family: Amiri
+                fonts:
+                  - asset: assets/fonts/Amiri-Regular.ttf
+                  - asset: assets/fonts/Amiri-Bold.ttf
+                    weight: 700
+              - family:Changa
+                fonts:
+                  - asset: assets/fonts/Changa-Regular.ttf
+                  - asset: assets/fonts/Changa-Bold.ttf
+                    weight: 700
+              - family: Lateef
+                fonts:
+                  - asset: assets/fonts/Lateef-Regular.ttf
+                  - asset: assets/fonts/Lateef-Bold.ttf
                     weight: 700
               - family: ScheherazadeNew
                 fonts:
-                  - asset: assets/fonts/scheherazade_regular.ttf
-                  - asset: assets/fonts/scheherazade_bold.ttf
+                  - asset: assets/fonts/ScheherazadeNew-Regular.ttf
+                  - asset: assets/fonts/ScheherazadeNew-Bold.ttf
                     weight: 700
               - family: ReadexPro
                 fonts:
-                  - asset: assets/fonts/readex_pro.ttf
+                  - asset: assets/fonts/ReadexPro-Regular.ttf
               - family: NotoSansArabic
                 fonts:
-                  - asset: assets/fonts/noto_sans_arabic.ttf
+                  - asset: assets/fonts/NotoSansArabic-Regular.ttf
               - family: NotoNaskhArabic
                 fonts:
-                  - asset: assets/fonts/noto_naskh_arabic.ttf
+                  - asset: assets/fonts/NotoNaskhArabic-Regular.ttf
               - family: IBMPlexSansArabic
                 fonts:
-                  - asset: assets/fonts/ibm_plex_arabic.ttf
-                  - asset: assets/fonts/ibm_plex_arabic_bold.ttf
+                  - asset: assets/fonts/IBMPlexSansArabic-Regular.ttf
+                  - asset: assets/fonts/IBMPlexSansArabic-Bold.ttf
                     weight: 700
               - family: ArefRuqaa
                 fonts:
-                  - asset: assets/fonts/aref_ruqaa.ttf
-                  - asset: assets/fonts/aref_ruqaa_bold.ttf
+                  - asset: assets/fonts/ArefRuqaa-Regular.ttf
+                  - asset: assets/fonts/ArefRuqaa-Bold.ttf
                     weight: 700
               - family: ReemKufi
                 fonts:
-                  - asset: assets/fonts/reem_kufi.ttf
+                  - asset: assets/fonts/ReemKufi-Regular.ttf
           EOF
+          sed -i 's/family:Changa/family: Changa/g' pubspec_clean.yaml
 
-      - name: Generate Android Platform Scaffolding
-        run: |
+          # Generate fresh Flutter Android shell
+          rm -rf lib android ios web linux macos windows test pubspec.yaml pubspec.lock
           flutter create --org com.rukn --project-name rukn_app --platforms=android .
+
+          # Restore our pubspec.yaml and 9 Dart files
           cp pubspec_clean.yaml pubspec.yaml
-          mkdir -p lib
-          cp -r lib_collected/* lib/
+          rm -rf lib/*
+          cp lib_collected/*.dart lib/
           rm -rf lib_collected pubspec_clean.yaml
 
-      - name: Download & Prepare 10 Luxury Arabic Fonts
+          # Auto-sanitize any hex typo and resolve TextDirection conflict between material.dart & intl.dart
+          sed -i 's/0xGGG/0xFFF/g' lib/*.dart
+          sed -i "s|import 'package:intl/intl.dart';|import 'package:intl/intl.dart' hide TextDirection;|g" lib/*.dart
+
+      - name: Download Luxury Arabic Fonts (12 Fonts)
         run: |
           mkdir -p assets/fonts
+          BASE="https://raw.githubusercontent.com/google/fonts/main/ofl"
+
           download_font() {
             local url="$1"
             local out="assets/fonts/$2"
-            curl -L --fail --silent --show-error "$url" -o "$out" || true
+            curl -L -s --fail "$url" -o "$out" || cp "$FLUTTER_ROOT/bin/cache/artifacts/material_fonts/Roboto-Regular.ttf" "$out"
             if [ ! -s "$out" ]; then
-              cp "${FLUTTER_ROOT}/bin/cache/artifacts/material_fonts/Roboto-Regular.ttf" "$out"
+              cp "$FLUTTER_ROOT/bin/cache/artifacts/material_fonts/Roboto-Regular.ttf" "$out"
             fi
           }
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Regular.ttf" "tajawal_regular.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Bold.ttf" "tajawal_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-Regular.ttf" "almarai_regular.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-Bold.ttf" "almarai_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/scheherazadenew/ScheherazadeNew-Regular.ttf" "scheherazade_regular.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/scheherazadenew/ScheherazadeNew-Bold.ttf" "scheherazade_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/readexpro/ReadexPro%5BHEXP%2Cwght%5D.ttf" "readex_pro.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf" "noto_sans_arabic.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf" "noto_naskh_arabic.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Regular.ttf" "ibm_plex_arabic.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Bold.ttf" "ibm_plex_arabic_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Regular.ttf" "aref_ruqaa.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Bold.ttf" "aref_ruqaa_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/reemkufi/ReemKufi%5Bwght%5D.ttf" "reem_kufi.ttf"
 
-      - name: Restore or Generate Fixed Signing Keystore for Rukn
+          download_font "$BASE/tajawal/Tajawal-Regular.ttf" "Tajawal-Regular.ttf"
+          download_font "$BASE/tajawal/Tajawal-Bold.ttf" "Tajawal-Bold.ttf"
+          download_font "$BASE/almarai/Almarai-Regular.ttf" "Almarai-Regular.ttf"
+          download_font "$BASE/almarai/Almarai-Bold.ttf" "Almarai-Bold.ttf"
+          download_font "$BASE/amiri/Amiri-Regular.ttf" "Amiri-Regular.ttf"
+          download_font "$BASE/amiri/Amiri-Bold.ttf" "Amiri-Bold.ttf"
+          download_font "$BASE/lateef/Lateef-Regular.ttf" "Lateef-Regular.ttf"
+          download_font "$BASE/lateef/Lateef-Bold.ttf" "Lateef-Bold.ttf"
+          download_font "$BASE/scheherazadenew/ScheherazadeNew-Regular.ttf" "ScheherazadeNew-Regular.ttf"
+          download_font "$BASE/scheherazadenew/ScheherazadeNew-Bold.ttf" "ScheherazadeNew-Bold.ttf"
+          download_font "$BASE/ibmplexsansarabic/IBMPlexSansArabic-Regular.ttf" "IBMPlexSansArabic-Regular.ttf"
+          download_font "$BASE/ibmplexsansarabic/IBMPlexSansArabic-Bold.ttf" "IBMPlexSansArabic-Bold.ttf"
+          download_font "$BASE/arefruqaa/ArefRuqaa-Regular.ttf" "ArefRuqaa-Regular.ttf"
+          download_font "$BASE/arefruqaa/ArefRuqaa-Bold.ttf" "ArefRuqaa-Bold.ttf"
+          download_font "$BASE/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" "Cairo-Regular.ttf"
+          cp "assets/fonts/Cairo-Regular.ttf" "assets/fonts/Cairo-Bold.ttf"
+          download_font "$BASE/changa/Changa%5Bwght%5D.ttf" "Changa-Regular.ttf"
+          cp "assets/fonts/Changa-Regular.ttf" "assets/fonts/Changa-Bold.ttf"
+          download_font "$BASE/readexpro/ReadexPro%5BHEXP%2Cwght%5D.ttf" "ReadexPro-Regular.ttf"
+          download_font "$BASE/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf" "NotoSansArabic-Regular.ttf"
+          download_font "$BASE/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf" "NotoNaskhArabic-Regular.ttf"
+          download_font "$BASE/reemkufi/ReemKufi%5Bwght%5D.ttf" "ReemKufi-Regular.ttf"
+
+      - name: Restore or Generate Permanent Fixed Signing Keystore
+        id: keystore_cache
         uses: actions/cache@v4
         with:
           path: ~/.android/rukn_fixed.keystore
           key: rukn-fixed-signing-keystore-permanent-v1
 
-      - name: Create Keystore If Not Cached
+      - name: Ensure Fixed Keystore Exists
         run: |
           mkdir -p ~/.android
           if [ ! -f ~/.android/rukn_fixed.keystore ]; then
@@ -349,19 +442,20 @@ jobs:
               -validity 36500 \
               -storepass rukn123456 \
               -keypass rukn123456 \
-              -dname "CN=Rukn App, OU=Gulf Luxury Apps, O=Rukn, L=Riyadh, S=Riyadh, C=SA"
+              -dname "CN=Rukn Luxury App, OU=Gulf Edition, O=Rukn, L=Riyadh, ST=Riyadh, C=SA"
           fi
           cp ~/.android/rukn_fixed.keystore android/app/rukn_fixed.keystore
 
-      - name: Configure Native Android Bridge, Royal Icon & Gradle Signing
+      - name: Configure Package Name, Royal Icon, Native Bridge & Signing
         run: |
-          mkdir -p android/app/src/main/kotlin/com/rukn/rukn_app
-          cat << 'EOF' > android/app/src/main/kotlin/com/rukn/rukn_app/MainActivity.kt
-          package com.rukn.rukn_app
+          # Clean any default MainActivity generated by flutter create
+          rm -rf android/app/src/main/kotlin/* android/app/src/main/java/*
+          mkdir -p android/app/src/main/kotlin/com/rukn/app
 
-          import android.app.KeyguardManager
+          cat << 'EOF' > android/app/src/main/kotlin/com/rukn/app/MainActivity.kt
+          package com.rukn.app
+
           import android.content.ContentValues
-          import android.content.Context
           import android.os.Build
           import android.os.Environment
           import android.provider.MediaStore
@@ -390,16 +484,15 @@ jobs:
                               }
                               result.success(true)
                           }
-                          "isDeviceSecure" -> {
-                              val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-                              result.success(km.isKeyguardSecure)
-                          }
                           "saveToDownloads" -> {
+                              val fileName = call.argument<String>("fileName") ?: "Rukn_Backup.zip"
+                              val bytes = call.argument<ByteArray>("bytes")
+                              if (bytes == null) {
+                                  result.error("NO_BYTES", "Bytes are null", null)
+                                  return@setMethodCallHandler
+                              }
                               try {
-                                  val fileName = call.argument<String>("fileName") ?: "rukn_file.txt"
-                                  val bytes = call.argument<ByteArray>("bytes") ?: ByteArray(0)
-                                  val mimeType = call.argument<String>("mimeType") ?: "text/plain"
-                                  val savedPath = saveFileToPublicDownloads(fileName, bytes, mimeType)
+                                  val savedPath = saveZipToDownloads(fileName, bytes)
                                   result.success(savedPath)
                               } catch (e: Exception) {
                                   result.error("SAVE_ERR", e.message, null)
@@ -410,12 +503,12 @@ jobs:
                   }
               }
 
-              private fun saveFileToPublicDownloads(fileName: String, bytes: ByteArray, mimeType: String): String {
+              private fun saveZipToDownloads(fileName: String, bytes: ByteArray): String {
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                       val resolver = applicationContext.contentResolver
                       val contentValues = ContentValues().apply {
                           put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                          put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                          put(MediaStore.MediaColumns.MIME_TYPE, "application/zip")
                           put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Rukn_ركن")
                       }
                       val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
@@ -439,60 +532,62 @@ jobs:
           }
           EOF
 
+          # Create Royal Navy & Gold Vector Icon
           mkdir -p android/app/src/main/res/drawable
           cat << 'EOF' > android/app/src/main/res/drawable/rukn_luxury_icon.xml
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:aapt="http://schemas.android.com/aapt"
               android:width="108dp"
               android:height="108dp"
               android:viewportWidth="108"
               android:viewportHeight="108">
+              <path android:pathData="M0,0h108v108h-108z">
+                  <aapt:attr name="android:fillColor">
+                      <gradient
+                          android:startX="0"
+                          android:startY="0"
+                          android:endX="108"
+                          android:endY="108"
+                          android:type="linear">
+                          <item android:offset="0.0" android:color="#FF0B132B"/>
+                          <item android:offset="1.0" android:color="#FF14213D"/>
+                      </gradient>
+                  </aapt:attr>
+              </path>
               <path
-                  android:fillColor="#0B132B"
-                  android:pathData="M0,0h108v108h-108z"/>
+                  android:pathData="M54,14 L94,54 L54,94 L14,54 Z"
+                  android:strokeWidth="2.5"
+                  android:strokeColor="#FFD4AF37"
+                  android:fillColor="#1AD4AF37"/>
               <path
-                  android:fillColor="#14213D"
-                  android:pathData="M18,18 C18,13.58 21.58,10 26,10 L82,10 C86.42,10 90,13.58 90,18 L90,90 C90,94.42 86.42,98 82,98 L26,98 C21.58,98 18,94.42 18,90 Z"/>
+                  android:pathData="M24,24 h60 v60 h-60 z"
+                  android:strokeWidth="2.2"
+                  android:strokeColor="#FFF59E0B"
+                  android:fillColor="#FF111C35"/>
               <path
-                  android:fillColor="#D4AF37"
-                  android:pathData="M24,20 C24,16.69 26.69,14 30,14 L78,14 C81.31,14 84,16.69 84,20 L84,27 L24,27 Z"/>
+                  android:pathData="M35,40 h38 v4.5 h-38 z M35,51.5 h38 v4.5 h-38 z M35,63 h24 v4.5 h-24 z"
+                  android:fillColor="#FFD4AF37"/>
               <path
-                  android:fillColor="#FDE68A"
-                  android:pathData="M34,39 L74,39 C75.1,39 76,39.9 76,41 C76,42.1 75.1,43 74,43 L34,43 C32.9,43 32,42.1 32,41 C32,39.9 32.9,39 34,39 Z"/>
-              <path
-                  android:fillColor="#E2E8F0"
-                  android:pathData="M34,51 L74,51 C75.1,51 76,51.9 76,53 C76,54.1 75.1,55 74,55 L34,55 C32.9,55 32,54.1 32,53 C32,51.9 32.9,51 34,51 Z"/>
-              <path
-                  android:fillColor="#E2E8F0"
-                  android:pathData="M42,63 L74,63 C75.1,63 76,63.9 76,65 C76,66.1 75.1,67 74,67 L42,67 C40.9,67 40,66.1 40,65 C40,63.9 40.9,63 42,63 Z"/>
-              <path
-                  android:fillColor="#D4AF37"
-                  android:pathData="M54,75 L74,75 C75.1,75 76,75.9 76,77 C76,78.1 75.1,79 74,79 L54,79 C52.9,79 52,78.1 52,77 C52,75.9 52.9,75 54,75 Z"/>
-              <path
-                  android:fillColor="#F59E0B"
-                  android:pathData="M28,78 L46,60 L51,65 L33,83 L26,85 Z"/>
-              <path
-                  android:fillColor="#FEF08A"
-                  android:pathData="M47,59 L50,56 C51.1,54.9 52.9,54.9 54,56 L55,57 C56.1,58.1 56.1,59.9 55,61 L52,64 Z"/>
+                  android:pathData="M31,72 C31,66 37,63 44,63 L72,63 C75,63 77,65 77,68 C77,72 74,75 69,75 L35,75 Z"
+                  android:fillColor="#FFF59E0B"/>
           </vector>
           EOF
 
-          rm -rf android/app/src/main/res/mipmap-anydpi-v26
-
+          # Write Clean AndroidManifest.xml with no duplicate attributes
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.rukn.rukn_app">
+              package="com.rukn.app">
 
-              <uses-permission android:name="android.permission.VIBRATE"/>
-              <uses-permission android:name="android.permission.WAKE_LOCK"/>
-              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 
               <application
                   android:label="رُكْن"
                   android:name="${applicationName}"
                   android:icon="@drawable/rukn_luxury_icon"
-                  android:roundIcon="@drawable/rukn_luxury_icon"
-                  android:supportsRtl="true">
+                  android:roundIcon="@drawable/rukn_luxury_icon">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -502,9 +597,8 @@ jobs:
                       android:hardwareAccelerated="true"
                       android:windowSoftInputMode="adjustResize">
                       <meta-data
-                        android:name="io.flutter.embedding.android.NormalTheme"
-                        android:resource="@style/NormalTheme"
-                        />
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
@@ -517,71 +611,49 @@ jobs:
           </manifest>
           EOF
 
-          cat << 'EOF' > android/app/build.gradle
-          plugins {
-              id "com.android.application"
-              id "kotlin-android"
-              id "dev.flutter.flutter-gradle-plugin"
-          }
+          # Update applicationId, SDK versions, and release signing in android/app/build.gradle
+          sed -i 's/com.rukn.rukn_app/com.rukn.app/g' android/app/build.gradle
+
+          cat << 'EOF' >> android/app/build.gradle
 
           android {
-              namespace "com.rukn.rukn_app"
-              compileSdk 34
-
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_1_8
-                  targetCompatibility JavaVersion.VERSION_1_8
-              }
-
-              kotlinOptions {
-                  jvmTarget = '1.8'
-              }
-
-              sourceSets {
-                  main.java.srcDirs += 'src/main/kotlin'
-              }
-
+              compileSdkVersion 34
               defaultConfig {
                   applicationId "com.rukn.app"
-                  minSdkVersion 24
+                  minSdkVersion 21
                   targetSdkVersion 34
-                  versionCode 100
-                  versionName "1.0.0"
+                  multiDexEnabled true
               }
-
               signingConfigs {
-                  release {
+                  fixedRelease {
                       storeFile file("rukn_fixed.keystore")
                       storePassword "rukn123456"
                       keyAlias "rukn_key"
                       keyPassword "rukn123456"
                   }
               }
-
               buildTypes {
                   release {
-                      signingConfig signingConfigs.release
+                      signingConfig signingConfigs.fixedRelease
                       minifyEnabled false
                       shrinkResources false
                   }
-                  debug {
-                      signingConfig signingConfigs.release
-                  }
               }
-          }
-
-          flutter {
-              source '../..'
           }
           EOF
 
       - name: Get Flutter Packages & Build Release APK
         run: |
           flutter pub get
-          flutter build apk --release
+          flutter build apk --release --no-tree-shake-icons
 
-      - name: Upload Rukn APK Artifact
+      - name: Rename and Prepare APK Artifact
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk Rukn_Luxury_App_v1.0.0.apk
+
+      - name: Upload Signed APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Rukn-Luxury-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: Rukn_Luxury_App_v1.0.0.apk
+          retention-days: 90
