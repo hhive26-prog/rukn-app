@@ -48,10 +48,53 @@ class RuknLuxuryApp extends StatefulWidget {
 class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
   bool _appUnlocked = false;
 
+  bool _shouldLockOnStart() {
+    try {
+      final dynamic dynSettings = widget.settings;
+      final bool hasPin = (dynSettings.pinCode as String?)?.length == 4;
+      final bool lockApp = (dynSettings.lockWholeApp as bool?) ?? false;
+      return hasPin && lockApp;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _resolveFontFamily() {
+    try {
+      final dynamic dynSettings = widget.settings;
+      return (dynSettings.fontFamily as String?) ?? 'Tajawal';
+    } catch (_) {
+      return 'Tajawal';
+    }
+  }
+
+  Color _resolvePrimaryColor() {
+    try {
+      final dynamic dynSettings = widget.settings;
+      return (dynSettings.primaryColor as Color?) ?? const Color(0xFF0F5132);
+    } catch (_) {
+      return const Color(0xFF0F5132);
+    }
+  }
+
+  Color _resolveScaffoldBg() {
+    try {
+      final dynamic dynSettings = widget.settings;
+      return (dynSettings.bgColor as Color?) ??
+          (widget.settings.isDarkMode
+              ? const Color(0xFF0B132B)
+              : const Color(0xFFF8F5F0));
+    } catch (_) {
+      return widget.settings.isDarkMode
+          ? const Color(0xFF0B132B)
+          : const Color(0xFFF8F5F0);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    if (!widget.settings.hasPinCode || !widget.settings.lockFullAppOnStart) {
+    if (!_shouldLockOnStart()) {
       _appUnlocked = true;
     }
   }
@@ -61,16 +104,18 @@ class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
     return AnimatedBuilder(
       animation: Listenable.merge([widget.settings, widget.vault]),
       builder: (context, _) {
-        final GulfThemeData theme = widget.settings.currentTheme;
-        final RuknFontOption font = widget.settings.currentFont;
+        final bool isDark = widget.settings.isDarkMode;
+        final Color primary = _resolvePrimaryColor();
+        final Color scaffoldBg = _resolveScaffoldBg();
+        final String fontFamily = _resolveFontFamily();
 
         SystemChrome.setSystemUIOverlayStyle(
           SystemUiOverlayStyle(
             statusBarColor: Colors.transparent,
             statusBarIconBrightness: Brightness.light,
-            systemNavigationBarColor: theme.scaffoldBg,
+            systemNavigationBarColor: scaffoldBg,
             systemNavigationBarIconBrightness:
-                widget.settings.isDarkMode ? Brightness.light : Brightness.dark,
+                isDark ? Brightness.light : Brightness.dark,
           ),
         );
 
@@ -90,37 +135,14 @@ class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
           ],
           theme: ThemeData(
             useMaterial3: true,
-            brightness:
-                widget.settings.isDarkMode ? Brightness.dark : Brightness.light,
-            scaffoldBackgroundColor: theme.scaffoldBg,
-            primaryColor: theme.primary,
-            fontFamily: font.familyName,
+            brightness: isDark ? Brightness.dark : Brightness.light,
+            scaffoldBackgroundColor: scaffoldBg,
+            primaryColor: primary,
+            fontFamily: fontFamily,
             colorScheme: ColorScheme.fromSeed(
-              seedColor: theme.primary,
-              brightness:
-                  widget.settings.isDarkMode ? Brightness.dark : Brightness.light,
-              primary: theme.primary,
-              secondary: theme.goldAccent,
-              surface: theme.cardBg,
-            ),
-            textSelectionTheme: TextSelectionThemeData(
-              cursorColor: theme.primary,
-              selectionColor: theme.goldAccent.withOpacity(0.32),
-              selectionHandleColor: theme.primary,
-            ),
-            snackBarTheme: SnackBarThemeData(
-              backgroundColor: theme.primaryDark,
-              contentTextStyle: TextStyle(
-                fontFamily: font.familyName,
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-                side: BorderSide(color: theme.goldAccent, width: 1),
-              ),
-              behavior: SnackBarBehavior.floating,
+              seedColor: primary,
+              brightness: isDark ? Brightness.dark : Brightness.light,
+              primary: primary,
             ),
           ),
           builder: (context, child) {
@@ -134,24 +156,19 @@ class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
               ),
             );
           },
-          home: _buildHomeGate(theme, font),
+          home: _buildHomeGate(),
         );
       },
     );
   }
 
-  Widget _buildHomeGate(GulfThemeData theme, RuknFontOption font) {
-    if (!_appUnlocked &&
-        widget.settings.hasPinCode &&
-        widget.settings.lockFullAppOnStart) {
+  Widget _buildHomeGate() {
+    if (!_appUnlocked && _shouldLockOnStart()) {
       return RuknPinLockScreen(
-        theme: theme,
-        fontFamily: font.familyName,
+        settings: widget.settings,
         title: 'رُكْن محمي برمز سري',
         subtitle: 'أدخل رمز الحماية المكون من 4 أرقام للدخول',
-        correctPin: widget.settings.appPinCode,
-        isEmbeddedFullScreen: true,
-        onSuccess: () {
+        onUnlocked: () {
           setState(() {
             _appUnlocked = true;
           });
