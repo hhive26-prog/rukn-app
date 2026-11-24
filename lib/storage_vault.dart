@@ -3,219 +3,185 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart' hide TextDirection;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// تصنيفات الملاحظات الخليجية السريعة في الشاشة الرئيسية
-class RuknCategory {
-  final String id;
-  final String title;
-  final String emoji;
-
-  const RuknCategory({
-    required this.id,
-    required this.title,
-    required this.emoji,
-  });
-
-  static const List<RuknCategory> allCategories = [
-    RuknCategory(id: 'all', title: 'الكل', emoji: '🗂️'),
-    RuknCategory(id: 'pinned', title: 'المثبتة', emoji: '📌'),
-    RuknCategory(id: 'work', title: 'عمل والتزامات', emoji: '💼'),
-    RuknCategory(id: 'poetry', title: 'شعر وخواطر', emoji: '✒️'),
-    RuknCategory(id: 'tasks', title: 'مقاضي ومهام', emoji: '🛒'),
-    RuknCategory(id: 'private', title: 'خاص', emoji: '🔒'),
-  ];
-}
-
-/// نموذج ملف الملاحظة النصية (.txt)
 class RuknNoteFile {
-  final String filePath;
-  final String title; // اسم الملف بدون .txt
+  final File file;
+  final String title;
   final String content;
-  final DateTime lastModified;
+  final DateTime modifiedAt;
   final bool isPinned;
-  final String categoryId;
   final bool isLocked;
+  final String category;
 
   const RuknNoteFile({
-    required this.filePath,
+    required this.file,
     required this.title,
     required this.content,
-    required this.lastModified,
-    required this.isPinned,
-    required this.categoryId,
-    required this.isLocked,
+    required this.modifiedAt,
+    this.isPinned = false,
+    this.isLocked = false,
+    this.category = '',
   });
 
-  String get fileNameWithExt => '$title.txt';
+  String get fileName => p.basename(file.path);
+
+  RuknNoteFile copyWith({
+    File? file,
+    String? title,
+    String? content,
+    DateTime? modifiedAt,
+    bool? isPinned,
+    bool? isLocked,
+    String? category,
+  }) {
+    return RuknNoteFile(
+      file: file ?? this.file,
+      title: title ?? this.title,
+      content: content ?? this.content,
+      modifiedAt: modifiedAt ?? this.modifiedAt,
+      isPinned: isPinned ?? this.isPinned,
+      isLocked: isLocked ?? this.isLocked,
+      category: category ?? this.category,
+    );
+  }
 }
 
-/// نموذج النسخة الآمنة داخل مجلد (خزنة_النسخ_الآمنة)
 class SafeBackupEntry {
-  final String filePath;
-  final String fileName;
-  final String noteTitle;
-  final String formattedTimestamp;
-  final DateTime modifiedTime;
+  final File file;
+  final String originalNoteTitle;
+  final DateTime createdAt;
   final int sizeBytes;
 
   const SafeBackupEntry({
-    required this.filePath,
-    required this.fileName,
-    required this.noteTitle,
-    required this.formattedTimestamp,
-    required this.modifiedTime,
+    required this.file,
+    required this.originalNoteTitle,
+    required this.createdAt,
     required this.sizeBytes,
   });
+
+  String get formattedDate =>
+      DateFormat('yyyy-MM-dd • HH:mm:ss', 'en').format(createdAt);
 }
 
-/// المحرك الرئيسي للتخزين المباشر (.txt) وخزنة النسخ الآمنة والـ ZIP
 class StorageVaultController extends ChangeNotifier {
-  static const MethodChannel _nativeChannel = MethodChannel('com.rukn.app/native');
+  static const MethodChannel _nativeChannel =
+      MethodChannel('com.rukn.app/native');
+
+  static const String notesFolderName = 'Rukn_Notes';
   static const String safeVaultFolderName = 'خزنة_النسخ_الآمنة';
 
-  late Directory _notesRootDir;
+  late Directory _notesDir;
   late Directory _safeVaultDir;
 
   List<RuknNoteFile> _notes = [];
   Set<String> _pinnedTitles = {};
-  Map<String, String> _noteCategories = {};
   Set<String> _lockedTitles = {};
-
-  bool _isInitialized = false;
+  Map<String, String> _categoryMap = {};
+  bool _isLoading = true;
 
   List<RuknNoteFile> get notes => List.unmodifiable(_notes);
-  bool get isInitialized => _isInitialized;
-  String get notesDirectoryPath => _isInitialized ? _notesRootDir.path : '';
+  bool get isLoading => _isLoading;
+  Directory get notesDirectory => _notesDir;
+  Directory get safeVaultDirectory => _safeVaultDir;
 
   Future<void> initializeVault() async {
+    _isLoading = true;
+    notifyListeners();
+
     final appDocDir = await getApplicationDocumentsDirectory();
-    _notesRootDir = Directory('${appDocDir.path}/Rukn_Notes');
-    if (!await _notesRootDir.exists()) {
-      await _notesRootDir.create(recursive: true);
+    _notesDir = Directory(p.join(appDocDir.path, notesFolderName));
+    if (!await _notesDir.exists()) {
+      await _notesDir.create(recursive: true);
     }
 
-    _safeVaultDir = Directory('${_notesRootDir.path}/$safeVaultFolderName');
+    _safeVaultDir = Directory(p.join(_notesDir.path, safeVaultFolderName));
     if (!await _safeVaultDir.exists()) {
       await _safeVaultDir.create(recursive: true);
     }
 
-    // إنشاء ملف .nomedia تلقائياً داخل خزنة_النسخ_الآمنة لمنع ظهورها في المستندات الأخيرة بالهاتف
-    final noMediaFile = File('${_safeVaultDir.path}/.nomedia');
+    final noMediaFile = File(p.join(_safeVaultDir.path, '.nomedia'));
     if (!await noMediaFile.exists()) {
       await noMediaFile.writeAsString('', flush: true);
     }
 
     await _loadMetadata();
-    await _ensureStarterWelcomeNote();
-    await reloadNotes();
-    _isInitialized = true;
+    await refreshNotes();
+
+    if (_notes.isEmpty) {
+      final prefs = await SharedPreferences.getInstance();
+      final welcomed = prefs.getBool('rukn_welcome_created') ?? false;
+      if (!welcomed) {
+        await createNewNote(
+          title: 'مرحباً بك في رُكْن',
+          initialContent:
+              'بسم الله الرحمن الرحيم\n\nأهلاً بك في تطبيق "رُكْن" — مفكرتك العربية الفاخرة وملاذك الآمن لتدوين الأفكار، الالتزامات، والخواطر.\n\n• جميع ملاحظاتك تُحفظ مباشرة بصيغة نصية صافية (TXT).\n• يمكنك تثبيت الملفات المهمة أو قفلها برمز سري.\n• خزنة النسخ الآمنة تحفظ لك نسخك السابقة دون حدود.',
+        );
+        await prefs.setBool('rukn_welcome_created', true);
+      }
+    }
+
+    _isLoading = false;
     notifyListeners();
   }
 
   Future<void> _loadMetadata() async {
     final prefs = await SharedPreferences.getInstance();
-    _pinnedTitles = (prefs.getStringList('rukn_pinned_titles') ?? []).toSet();
-    _lockedTitles = (prefs.getStringList('rukn_locked_titles') ?? []).toSet();
+    _pinnedTitles = (prefs.getStringList('rukn_pinned_files') ?? []).toSet();
+    _lockedTitles = (prefs.getStringList('rukn_locked_files') ?? []).toSet();
 
-    final catJson = prefs.getString('rukn_note_categories');
-    if (catJson != null && catJson.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(catJson) as Map<String, dynamic>;
-        _noteCategories = decoded.map((k, v) => MapEntry(k, v.toString()));
-      } catch (_) {
-        _noteCategories = {};
-      }
+    final catJson = prefs.getString('rukn_file_categories') ?? '{}';
+    try {
+      final decoded = jsonDecode(catJson) as Map<String, dynamic>;
+      _categoryMap = decoded.map((k, v) => MapEntry(k, v.toString()));
+    } catch (_) {
+      _categoryMap = {};
     }
   }
 
   Future<void> _saveMetadata() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('rukn_pinned_titles', _pinnedTitles.toList());
-    await prefs.setStringList('rukn_locked_titles', _lockedTitles.toList());
-    await prefs.setString('rukn_note_categories', jsonEncode(_noteCategories));
+    await prefs.setStringList('rukn_pinned_files', _pinnedTitles.toList());
+    await prefs.setStringList('rukn_locked_files', _lockedTitles.toList());
+    await prefs.setString('rukn_file_categories', jsonEncode(_categoryMap));
   }
 
-  /// إنشاء ملاحظة ترحيبية فاخرة عند تشغيل "رُكْن" لأول مرة فقط
-  Future<void> _ensureStarterWelcomeNote() async {
-    final prefs = await SharedPreferences.getInstance();
-    final createdWelcome = prefs.getBool('rukn_welcome_note_created') ?? false;
-    if (createdWelcome) return;
-
-    final welcomeTitle = 'مرحباً بك في رُكْن — مساحتك الخاصة';
-    final welcomeFile = File('${_notesRootDir.path}/$welcomeTitle.txt');
-    if (!await welcomeFile.exists()) {
-      const welcomeContent = '''بسم الله الرحمن الرحيم
-
-أهلاً بك في تطبيق «رُكْن» — مساحتك الشخصية الفاخرة لتدوين الفكر، حفظ القصائد والخواطر، وتنظيم التزاماتك اليومية بهوية خليجية أصيلة.
-
-✨ أبرز المزايا التي صُممت لأجلك:
-1. تخصيص الهوية: من الإعدادات يمكنك كتابة اسمك أو كنيتك ليظهر في البطاقة الملكية العلوية مع اختيار الثيم الخليجي المفضل لديك.
-2. خزنة النسخ الآمنة: كل ملف تحفظه يمكنك أخذ نسخ آمنة غير محدودة منه واستعادتها في أي لحظة دون خوف من ضياع أي حرف.
-3. جمع الأرقام التلقائي (∑): اكتب أي مصاريف أو التزامات مالية في سطور متتالية، ثم اضغط أداة (جمع الأرقام ∑) في شريط التحرير ليحسب الإجمالي فوراً!
-4. المشاركة كبطاقة مصورة: حوّل أي قصيدة أو خاطرة أو فائدة إلى بطاقة مصورة فاخرة جاهزة للمشاركة في الواتساب وسناب شات.
-5. البحث العربي الذكي: ابحث عن أي كلمة حتى لو كانت مشكّلة أو تختلف فيها الهمزات والتاء المربوطة.
-
-نتمنى لك تجربة تدوين راقية ومثمرة.''';
-
-      await welcomeFile.writeAsString(welcomeContent, encoding: utf8, flush: true);
-      _pinnedTitles.add(welcomeTitle);
-      _noteCategories[welcomeTitle] = 'work';
-      await _saveMetadata();
-    }
-    await prefs.setBool('rukn_welcome_note_created', true);
-  }
-
-  /// تنظيف اسم الملف من الرموز غير المسموحة في نظام الملفات
-  String sanitizeTitle(String rawTitle) {
-    var clean = rawTitle
-        .trim()
+  String _sanitizeTitle(String raw) {
+    final cleaned = raw
         .replaceAll(RegExp(r'[\\/:*?"<>|]'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll('\n', ' ')
         .trim();
-    if (clean.toLowerCase().endsWith('.txt')) {
-      clean = clean.substring(0, clean.length - 4).trim();
-    }
-    return clean;
+    return cleaned.isEmpty ? 'ملف بدون عنوان' : cleaned;
   }
 
-  /// إعادة تحميل جميع ملفات .txt وترتيبها (المثبتة أولاً ثم من الأحدث للأقدم)
-  Future<void> reloadNotes() async {
-    if (!await _notesRootDir.exists()) return;
+  Future<void> refreshNotes() async {
+    if (!await _notesDir.exists()) return;
 
-    final entities = await _notesRootDir.list(followLinks: false).toList();
-    final List<RuknNoteFile> loaded = [];
+    final entities = await _notesDir.list(followLinks: false).toList();
+    final loaded = <RuknNoteFile>[];
 
     for (final entity in entities) {
       if (entity is File && entity.path.toLowerCase().endsWith('.txt')) {
-        final fileName = entity.uri.pathSegments.last;
-        if (fileName.startsWith('.')) continue;
-
-        final title = fileName.substring(0, fileName.length - 4);
-        String content = '';
-        DateTime modified = DateTime.now();
         try {
-          content = await entity.readAsString(encoding: utf8);
-          modified = await entity.lastModified();
+          final fileName = p.basenameWithoutExtension(entity.path);
+          final stat = await entity.stat();
+          final content = await entity.readAsString(encoding: utf8);
+          loaded.add(
+            RuknNoteFile(
+              file: entity,
+              title: fileName,
+              content: content,
+              modifiedAt: stat.modified,
+              isPinned: _pinnedTitles.contains(fileName),
+              isLocked: _lockedTitles.contains(fileName),
+              category: _categoryMap[fileName] ?? '',
+            ),
+          );
         } catch (_) {}
-
-        final isPinned = _pinnedTitles.contains(title);
-        final categoryId = _noteCategories[title] ?? 'all';
-        final isLocked = _lockedTitles.contains(title) || categoryId == 'private';
-
-        loaded.add(
-          RuknNoteFile(
-            filePath: entity.path,
-            title: title,
-            content: content,
-            lastModified: modified,
-            isPinned: isPinned,
-            categoryId: categoryId,
-            isLocked: isLocked,
-          ),
-        );
       }
     }
 
@@ -223,241 +189,214 @@ class StorageVaultController extends ChangeNotifier {
       if (a.isPinned != b.isPinned) {
         return a.isPinned ? -1 : 1;
       }
-      return b.lastModified.compareTo(a.lastModified);
+      return b.modifiedAt.compareTo(a.modifiedAt);
     });
 
     _notes = loaded;
     notifyListeners();
   }
 
-  /// التحقق من وجود ملف بنفس الاسم
-  bool noteExists(String title) {
-    final clean = sanitizeTitle(title);
-    return _notes.any((n) => n.title == clean);
-  }
-
-  /// إنشاء ملف نصي جديد (.txt)
-  Future<RuknNoteFile> createNewNote({
+  Future<RuknNoteFile?> createNewNote({
     required String title,
     String initialContent = '',
-    String categoryId = 'all',
+    String category = '',
   }) async {
-    String clean = sanitizeTitle(title);
-    if (clean.isEmpty) {
-      clean = 'ملاحظة جديدة';
-    }
+    String baseTitle = _sanitizeTitle(title);
+    String finalTitle = baseTitle;
+    int counter = 1;
 
-    String finalTitle = clean;
-    int counter = 2;
-    while (await File('${_notesRootDir.path}/$finalTitle.txt').exists()) {
-      finalTitle = '$clean ($counter)';
+    while (await File(p.join(_notesDir.path, '$finalTitle.txt')).exists()) {
       counter++;
+      finalTitle = '$baseTitle ($counter)';
     }
 
-    final file = File('${_notesRootDir.path}/$finalTitle.txt');
+    final file = File(p.join(_notesDir.path, '$finalTitle.txt'));
     await file.writeAsString(initialContent, encoding: utf8, flush: true);
 
-    if (categoryId != 'all' && categoryId != 'pinned') {
-      _noteCategories[finalTitle] = categoryId;
-      if (categoryId == 'private') {
-        _lockedTitles.add(finalTitle);
-      }
-      await _saveMetadata();
-    } else if (categoryId == 'pinned') {
-      _pinnedTitles.add(finalTitle);
+    if (category.isNotEmpty && category != 'الكل' && category != 'المثبتة') {
+      _categoryMap[finalTitle] = category;
       await _saveMetadata();
     }
 
-    await reloadNotes();
-    return _notes.firstWhere((n) => n.title == finalTitle);
+    await refreshNotes();
+    try {
+      return _notes.firstWhere((n) => n.title == finalTitle);
+    } catch (_) {
+      return _notes.isNotEmpty ? _notes.first : null;
+    }
   }
 
-  /// حفظ محتوى الملاحظة مباشرة بصيغة UTF-8
-  Future<void> saveNoteContent(String title, String newContent) async {
-    final clean = sanitizeTitle(title);
-    if (clean.isEmpty) return;
-
-    final file = File('${_notesRootDir.path}/$clean.txt');
-    await file.writeAsString(newContent, encoding: utf8, flush: true);
-    await reloadNotes();
-  }
-
-  /// 1. تثبيت أو إلغاء تثبيت الملف
-  Future<bool> togglePin(String title) async {
-    final isNowPinned = !_pinnedTitles.contains(title);
-    if (isNowPinned) {
-      _pinnedTitles.add(title);
+  Future<void> saveNoteContent(RuknNoteFile note, String newContent) async {
+    await note.file.writeAsString(newContent, encoding: utf8, flush: true);
+    final idx = _notes.indexWhere((n) => n.title == note.title);
+    if (idx != -1) {
+      _notes[idx] = _notes[idx].copyWith(
+        content: newContent,
+        modifiedAt: DateTime.now(),
+      );
+      _notes.sort((a, b) {
+        if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
+        return b.modifiedAt.compareTo(a.modifiedAt);
+      });
+      notifyListeners();
     } else {
-      _pinnedTitles.remove(title);
+      await refreshNotes();
+    }
+  }
+
+  Future<void> togglePinNote(RuknNoteFile note) async {
+    if (_pinnedTitles.contains(note.title)) {
+      _pinnedTitles.remove(note.title);
+    } else {
+      _pinnedTitles.add(note.title);
     }
     await _saveMetadata();
-    await reloadNotes();
-    return isNowPinned;
+    await refreshNotes();
   }
 
-  /// تغيير تصنيف الملف أو قفله
-  Future<void> setNoteCategory(String title, String categoryId) async {
-    _noteCategories[title] = categoryId;
-    if (categoryId == 'private') {
-      _lockedTitles.add(title);
+  Future<void> toggleLockNote(RuknNoteFile note) async {
+    if (_lockedTitles.contains(note.title)) {
+      _lockedTitles.remove(note.title);
+    } else {
+      _lockedTitles.add(note.title);
     }
     await _saveMetadata();
-    await reloadNotes();
+    await refreshNotes();
   }
 
-  Future<bool> toggleNoteLock(String title) async {
-    final isNowLocked = !_lockedTitles.contains(title);
-    if (isNowLocked) {
-      _lockedTitles.add(title);
+  Future<void> setNoteCategory(RuknNoteFile note, String category) async {
+    if (category.isEmpty || category == 'الكل') {
+      _categoryMap.remove(note.title);
     } else {
-      _lockedTitles.remove(title);
-      if (_noteCategories[title] == 'private') {
-        _noteCategories[title] = 'all';
+      _categoryMap[note.title] = category;
+    }
+    await _saveMetadata();
+    await refreshNotes();
+  }
+
+  Future<void> renameCategoryAcrossNotes(
+    String oldCategory,
+    String newCategory,
+  ) async {
+    bool changed = false;
+    final keys = _categoryMap.keys.toList();
+    for (final k in keys) {
+      if (_categoryMap[k] == oldCategory) {
+        if (newCategory.isEmpty) {
+          _categoryMap.remove(k);
+        } else {
+          _categoryMap[k] = newCategory;
+        }
+        changed = true;
       }
     }
-    await _saveMetadata();
-    await reloadNotes();
-    return isNowLocked;
+    if (changed) {
+      await _saveMetadata();
+      await refreshNotes();
+    }
   }
 
-  /// 2. إعادة تسمية الملف مع الحفاظ على حالة التثبيت وإعادة تسمية جميع نسخه الآمنة تلقائياً
-  Future<RuknNoteFile?> renameNote({
-    required String oldTitle,
-    required String newRawTitle,
-  }) async {
-    final newTitle = sanitizeTitle(newRawTitle);
-    if (newTitle.isEmpty || newTitle == oldTitle) return null;
+  Future<RuknNoteFile?> renameNote(
+    RuknNoteFile note,
+    String newRawTitle,
+  ) async {
+    final cleanNew = _sanitizeTitle(newRawTitle);
+    if (cleanNew == note.title) return note;
 
-    final oldFile = File('${_notesRootDir.path}/$oldTitle.txt');
-    final newFile = File('${_notesRootDir.path}/$newTitle.txt');
-
-    if (!await oldFile.exists()) return null;
-    if (await newFile.exists()) {
-      throw Exception('يوجد ملف آخر بنفس هذا الاسم');
+    final targetPath = p.join(_notesDir.path, '$cleanNew.txt');
+    if (await File(targetPath).exists()) {
+      throw Exception('يوجد ملف آخر بنفس الاسم');
     }
 
-    await oldFile.rename(newFile.path);
+    final renamedFile = await note.file.rename(targetPath);
 
-    // نقل حالة التثبيت والتصنيف والقفل للاسم الجديد
-    if (_pinnedTitles.remove(oldTitle)) {
-      _pinnedTitles.add(newTitle);
+    if (_pinnedTitles.remove(note.title)) {
+      _pinnedTitles.add(cleanNew);
     }
-    if (_lockedTitles.remove(oldTitle)) {
-      _lockedTitles.add(newTitle);
+    if (_lockedTitles.remove(note.title)) {
+      _lockedTitles.add(cleanNew);
     }
-    if (_noteCategories.containsKey(oldTitle)) {
-      _noteCategories[newTitle] = _noteCategories.remove(oldTitle)!;
+    if (_categoryMap.containsKey(note.title)) {
+      _categoryMap[cleanNew] = _categoryMap.remove(note.title)!;
     }
     await _saveMetadata();
 
-    // إعادة تسمية جميع النسخ الآمنة المرتبطة بهذا الملف داخل خزنة_النسخ_الآمنة
+    // Update associated safe backups prefix so they stay linked to the renamed file
     if (await _safeVaultDir.exists()) {
-      final prefix = '${oldTitle}__نسخة_آمنة_';
+      final oldPrefix = '${note.title}__نسخة_آمنة_';
+      final newPrefix = '${cleanNew}__نسخة_آمنة_';
       final entities = await _safeVaultDir.list().toList();
       for (final entity in entities) {
         if (entity is File) {
-          final fName = entity.uri.pathSegments.last;
-          if (fName.startsWith(prefix)) {
-            final suffix = fName.substring(oldTitle.length);
-            final renamedBackupPath = '${_safeVaultDir.path}/$newTitle$suffix';
+          final base = p.basename(entity.path);
+          if (base.startsWith(oldPrefix)) {
+            final suffix = base.substring(oldPrefix.length);
+            final newBackupPath = p.join(_safeVaultDir.path, '$newPrefix$suffix');
             try {
-              await entity.rename(renamedBackupPath);
+              await entity.rename(newBackupPath);
             } catch (_) {}
           }
         }
       }
     }
 
-    await reloadNotes();
+    await refreshNotes();
     try {
-      return _notes.firstWhere((n) => n.title == newTitle);
+      return _notes.firstWhere((n) => n.title == cleanNew);
     } catch (_) {
-      return null;
+      return RenamedFallback.from(renamedFile, cleanNew, note);
     }
   }
 
-  /// 3. إنشاء نسخة مكررة من الملف
-  Future<RuknNoteFile> duplicateNote(RuknNoteFile sourceNote) async {
-    final baseCopyTitle = '${sourceNote.title} - نسخة';
+  Future<RuknNoteFile?> duplicateNote(RuknNoteFile note) async {
     return createNewNote(
-      title: baseCopyTitle,
-      initialContent: sourceNote.content,
-      categoryId: sourceNote.categoryId,
+      title: '${note.title} - نسخة',
+      initialContent: note.content,
+      category: note.category,
     );
   }
 
-  /// صياغة طابع التاريخ والوقت للنسخ الآمنة: yyyy-MM-dd_HH-mm-ss
-  String _formatSafeTimestamp(DateTime dt) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${dt.year}-${two(dt.month)}-${two(dt.day)}_${two(dt.hour)}-${two(dt.minute)}-${two(dt.second)}';
-  }
-
-  /// 4. إنشاء نسخة آمنة في (خزنة_النسخ_الآمنة) بدون أي حد أقصى (No Cap)
-  Future<SafeBackupEntry> createSafeBackup(String noteTitle, {String? customContent}) async {
+  Future<SafeBackupEntry?> createSafeBackup(
+    RuknNoteFile note, {
+    String? overrideContent,
+  }) async {
     if (!await _safeVaultDir.exists()) {
       await _safeVaultDir.create(recursive: true);
     }
-    final noMediaFile = File('${_safeVaultDir.path}/.nomedia');
-    if (!await noMediaFile.exists()) {
-      await noMediaFile.writeAsString('', flush: true);
-    }
-
-    String textToSave = customContent ?? '';
-    if (customContent == null) {
-      final originalFile = File('${_notesRootDir.path}/$noteTitle.txt');
-      if (await originalFile.exists()) {
-        textToSave = await originalFile.readAsString(encoding: utf8);
-      }
-    }
-
-    final now = DateTime.now();
-    var stamp = _formatSafeTimestamp(now);
-    var backupFileName = '${noteTitle}__نسخة_آمنة_$stamp.txt';
-    var backupFile = File('${_safeVaultDir.path}/$backupFileName');
-
-    int extra = 1;
-    while (await backupFile.exists()) {
-      backupFileName = '${noteTitle}__نسخة_آمنة_${stamp}_$extra.txt';
-      backupFile = File('${_safeVaultDir.path}/$backupFileName');
-      extra++;
-    }
-
+    final stamp =
+        DateFormat('yyyy-MM-dd_HH-mm-ss', 'en').format(DateTime.now());
+    final fileName = '${note.title}__نسخة_آمنة_$stamp.txt';
+    final backupFile = File(p.join(_safeVaultDir.path, fileName));
+    final textToSave = overrideContent ?? note.content;
     await backupFile.writeAsString(textToSave, encoding: utf8, flush: true);
     final stat = await backupFile.stat();
 
     return SafeBackupEntry(
-      filePath: backupFile.path,
-      fileName: backupFileName,
-      noteTitle: noteTitle,
-      formattedTimestamp: stamp.replaceAll('_', '  '),
-      modifiedTime: stat.modified,
+      file: backupFile,
+      originalNoteTitle: note.title,
+      createdAt: stat.modified,
       sizeBytes: stat.size,
     );
   }
 
-  /// 5. تصفح النسخ الآمنة الخاصة بملف معين مرتبة من الأحدث للأقدم
-  Future<List<SafeBackupEntry>> listSafeBackupsForNote(String noteTitle) async {
+  Future<List<SafeBackupEntry>> listSafeBackupsForNote(
+    RuknNoteFile note,
+  ) async {
     if (!await _safeVaultDir.exists()) return [];
-
-    final prefix = '${noteTitle}__نسخة_آمنة_';
+    final prefix = '${note.title}__نسخة_آمنة_';
     final entities = await _safeVaultDir.list().toList();
-    final List<SafeBackupEntry> list = [];
+    final result = <SafeBackupEntry>[];
 
     for (final entity in entities) {
       if (entity is File && entity.path.toLowerCase().endsWith('.txt')) {
-        final fName = entity.uri.pathSegments.last;
-        if (fName.startsWith(prefix)) {
+        final base = p.basename(entity.path);
+        if (base.startsWith(prefix)) {
           final stat = await entity.stat();
-          final rawStamp = fName
-              .substring(prefix.length, fName.length - 4)
-              .replaceAll('_', '  •  ');
-          list.add(
+          result.add(
             SafeBackupEntry(
-              filePath: entity.path,
-              fileName: fName,
-              noteTitle: noteTitle,
-              formattedTimestamp: rawStamp,
-              modifiedTime: stat.modified,
+              file: entity,
+              originalNoteTitle: note.title,
+              createdAt: stat.modified,
               sizeBytes: stat.size,
             ),
           );
@@ -465,137 +404,112 @@ class StorageVaultController extends ChangeNotifier {
       }
     }
 
-    list.sort((a, b) => b.modifiedTime.compareTo(a.modifiedTime));
-    return list;
+    result.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
   }
 
-  /// قراءة محتوى نسخة آمنة للمعاينة
-  Future<String> readSafeBackupContent(SafeBackupEntry entry) async {
-    final file = File(entry.filePath);
-    if (!await file.exists()) return '';
-    return file.readAsString(encoding: utf8);
+  Future<String> restoreSafeBackupSmartly(
+    RuknNoteFile note,
+    SafeBackupEntry backup,
+  ) async {
+    final backupContent = await backup.file.readAsString(encoding: utf8);
+    if (note.content.trim().isNotEmpty && note.content != backupContent) {
+      await createSafeBackup(note, overrideContent: note.content);
+    }
+    await saveNoteContent(note, backupContent);
+    return backupContent;
   }
 
-  /// الاستعادة الذكية الصامتة (Silent Smart Restore):
-  /// تفحص بصمت إذا كان النص الحالي يختلف عن أحدث نسخة آمنة؛ فإذا اختلف تنشئ نسخة آمنة صامتة أولاً ثم تستعيد فوراً
-  Future<String> restoreSafeBackupSmartly({
-    required String noteTitle,
-    required SafeBackupEntry targetBackup,
-  }) async {
-    final currentFile = File('${_notesRootDir.path}/$noteTitle.txt');
-    String currentText = '';
-    if (await currentFile.exists()) {
-      currentText = await currentFile.readAsString(encoding: utf8);
-    }
-
-    final existingBackups = await listSafeBackupsForNote(noteTitle);
-    String latestBackupText = '';
-    if (existingBackups.isNotEmpty) {
-      latestBackupText = await readSafeBackupContent(existingBackups.first);
-    }
-
-    final selectedBackupText = await readSafeBackupContent(targetBackup);
-
-    // إذا كان النص الحالي يحتوي على تعديلات غير محفوظة في أحدث نسخة آمنة ويختلف عن النسخة المراد استعادتها
-    if (currentText.trim().isNotEmpty &&
-        currentText != latestBackupText &&
-        currentText != selectedBackupText) {
-      await createSafeBackup(noteTitle, customContent: currentText);
-    }
-
-    await currentFile.writeAsString(selectedBackupText, encoding: utf8, flush: true);
-    await reloadNotes();
-    return selectedBackupText;
-  }
-
-  /// 6. مشاركة الملف النصي أو محتواه
-  Future<void> shareNoteFile(RuknNoteFile note) async {
-    final file = File(note.filePath);
-    if (await file.exists()) {
-      await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'text/plain')],
-        subject: note.title,
-        text: note.content,
-      );
-    } else {
-      await Share.share(note.content, subject: note.title);
+  Future<void> deleteSafeBackup(SafeBackupEntry backup) async {
+    if (await backup.file.exists()) {
+      await backup.file.delete();
     }
   }
 
-  /// 7. حذف الملف (ينشئ بصمت نسخة آمنة تلقائية في خزنة_النسخ_الآمنة قبل الحذف الفعلي)
   Future<void> deleteNoteWithSafetyBackup(RuknNoteFile note) async {
-    await createSafeBackup(note.title, customContent: note.content);
+    try {
+      await createSafeBackup(note);
+    } catch (_) {}
 
-    final file = File(note.filePath);
-    if (await file.exists()) {
-      await file.delete();
+    if (await note.file.exists()) {
+      await note.file.delete();
     }
-
     _pinnedTitles.remove(note.title);
     _lockedTitles.remove(note.title);
-    _noteCategories.remove(note.title);
+    _categoryMap.remove(note.title);
     await _saveMetadata();
-    await reloadNotes();
+    await refreshNotes();
   }
 
-  /// النسخ الاحتياطي الشامل (ZIP) لجميع ملفات .txt وخزنة النسخ الآمنة
-  Future<String> exportFullZipBackup({bool shareImmediately = true}) async {
+  Future<String?> exportFullVaultZip({
+    required bool saveToDevice,
+    required bool shareExternally,
+  }) async {
     final archive = Archive();
 
-    // إضافة جميع ملفات الملاحظات .txt
-    if (await _notesRootDir.exists()) {
-      final rootEntities = await _notesRootDir.list().toList();
-      for (final entity in rootEntities) {
-        if (entity is File && entity.path.toLowerCase().endsWith('.txt')) {
-          final bytes = await entity.readAsBytes();
-          final name = entity.uri.pathSegments.last;
-          archive.addFile(ArchiveFile(name, bytes.length, bytes));
-        }
-      }
+    for (final note in _notes) {
+      final bytes = utf8.encode(note.content);
+      archive.addFile(
+        ArchiveFile('ملفاتي/${note.title}.txt', bytes.length, bytes),
+      );
     }
 
-    // إضافة ملفات خزنة_النسخ_الآمنة داخل مجلدها في الـ ZIP
     if (await _safeVaultDir.exists()) {
-      final vaultEntities = await _safeVaultDir.list().toList();
-      for (final entity in vaultEntities) {
+      final entities = await _safeVaultDir.list().toList();
+      for (final entity in entities) {
         if (entity is File && entity.path.toLowerCase().endsWith('.txt')) {
           final bytes = await entity.readAsBytes();
-          final name = '$safeVaultFolderName/${entity.uri.pathSegments.last}';
-          archive.addFile(ArchiveFile(name, bytes.length, bytes));
+          final name = p.basename(entity.path);
+          archive.addFile(
+            ArchiveFile('$safeVaultFolderName/$name', bytes.length, bytes),
+          );
         }
       }
     }
 
     final zipEncoder = ZipEncoder();
-    final zipBytes = zipEncoder.encode(archive) ?? [];
+    final zipBytes = zipEncoder.encode(archive);
+    if (zipBytes == null) return null;
 
-    final now = DateTime.now();
-    final stamp = _formatSafeTimestamp(now);
+    final stamp = DateFormat('yyyy-MM-dd_HH-mm', 'en').format(DateTime.now());
     final zipFileName = 'Rukn_Backup_$stamp.zip';
 
-    final tempDir = await getTemporaryDirectory();
-    final tempZipFile = File('${tempDir.path}/$zipFileName');
-    await tempZipFile.writeAsBytes(zipBytes, flush: true);
+    String? savedLocation;
+    if (saveToDevice) {
+      try {
+        savedLocation = await _nativeChannel.invokeMethod<String>(
+          'saveToDownloads',
+          {
+            'fileName': zipFileName,
+            'bytes': Uint8List.fromList(zipBytes),
+            'mimeType': 'application/zip',
+          },
+        );
+      } catch (_) {}
+    }
 
-    String savedLocation = tempZipFile.path;
-    try {
-      final res = await _nativeChannel.invokeMethod<String>('saveToDownloads', {
-        'fileName': zipFileName,
-        'bytes': Uint8List.fromList(zipBytes),
-        'mimeType': 'application/zip',
-      });
-      if (res != null && res.isNotEmpty) {
-        savedLocation = res;
-      }
-    } catch (_) {}
-
-    if (shareImmediately) {
+    if (shareExternally) {
+      final tempDir = await getTemporaryDirectory();
+      final tempZip = File(p.join(tempDir.path, zipFileName));
+      await tempZip.writeAsBytes(zipBytes, flush: true);
       await Share.shareXFiles(
-        [XFile(tempZipFile.path, mimeType: 'application/zip')],
-        subject: 'نسخة احتياطية شاملة — تطبيق رُكْن',
+        [
+          XFile(
+            tempZip.path,
+            name: zipFileName,
+            mimeType: 'application/zip',
+          ),
+        ],
+        text: 'نسخة احتياطية شاملة من تطبيق رُكْن',
       );
     }
 
-    return savedLocation;
+    return savedLocation ?? zipFileName;
+  }
+}
+
+class RenamedFallback {
+  static RuknNoteFile from(File file, String title, RuknNoteFile old) {
+    return old.copyWith(file: file, title: title);
   }
 }
