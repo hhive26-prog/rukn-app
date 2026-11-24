@@ -4,370 +4,274 @@ import 'package:flutter/services.dart';
 
 import 'gulf_themes.dart';
 import 'luxury_ui.dart';
-import 'storage_vault.dart';
 import 'smart_arabic_engine.dart';
+import 'storage_vault.dart';
 import 'share_card_studio.dart';
 
-class RuknEditorScreen extends StatefulWidget {
+class EditorScreen extends StatefulWidget {
   final AppSettingsController settings;
   final StorageVaultController vault;
-  final RuknNoteFile initialNote;
-  final String initialSearchQuery;
-  final bool startInEditMode;
+  final RuknNoteFile note;
+  final bool initialEditMode;
+  final String? initialSearchQuery;
 
-  const RuknEditorScreen({
+  const EditorScreen({
     super.key,
     required this.settings,
     required this.vault,
-    required this.initialNote,
-    this.initialSearchQuery = '',
-    this.startInEditMode = false,
+    required this.note,
+    this.initialEditMode = false,
+    this.initialSearchQuery,
   });
 
   @override
-  State<RuknEditorScreen> createState() => _RuknEditorScreenState();
+  State<EditorScreen> createState() => _EditorScreenState();
 }
 
-class _RuknEditorScreenState extends State<RuknEditorScreen>
+class _EditorScreenState extends State<EditorScreen>
     with WidgetsBindingObserver {
-  late String _noteTitle;
-  late bool _isEditMode;
-
-  late final TextEditingController _textController;
-  final FocusNode _editorFocusNode = FocusNode();
-
+  late TextEditingController _textController;
   final ScrollController _readScrollController = ScrollController();
   final ScrollController _editScrollController = ScrollController();
+  final FocusNode _editorFocusNode = FocusNode();
 
-  // سجل التراجع والإعادة (Undo / Redo)
+  late bool _isEditMode;
+  bool _isToolbarExpanded = true;
+  double _zoomFactor = 1.0;
+
+  // البحث الذكي داخل المذكرة
+  bool _showInNoteSearch = false;
+  final TextEditingController _inNoteSearchCtrl = TextEditingController();
+  String _inNoteQuery = '';
+  List<SmartMatchRange> _matches = [];
+  int _currentMatchIndex = 0;
+
+  // التراجع والإعادة (Undo / Redo)
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
-  bool _isInternalTextChange = false;
+  bool _isApplyingUndoRedo = false;
 
-  // متغيرات الحفظ التلقائي الفوري فائق الأمان
+  // الحفظ التلقائي
   Timer? _autoSaveTimer;
-  bool _isDirty = false;
-  String _lastSavedContent = '';
+  bool _hasUnsavedChanges = false;
+  bool _isSaving = false;
 
-  // متغيرات التمرير السريع الجانبي والقفز وثبات الموضع
-  double _scrollFraction = 0.0;
-  bool _isDraggingFastThumb = false;
-  bool _showJumpMenuPopup = false;
+  // زر القفز السريع (أول / آخر المستند)
+  bool _showJumpButton = false;
+  bool _jumpToTop = false;
 
-  // البحث داخل المستند
-  String _activeHighlightQuery = '';
-
-  ScrollController get _activeScrollController =>
-      _isEditMode ? _editScrollController : _readScrollController;
+  AppSettingsController get s => widget.settings;
+  StorageVaultController get v => widget.vault;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    _noteTitle = widget.initialNote.title;
-    _isEditMode = widget.startInEditMode;
-    _lastSavedContent = widget.initialNote.content;
-    _activeHighlightQuery = widget.initialSearchQuery.trim();
+    _isEditMode = widget.initialEditMode;
+    _textController = TextEditingController(text: widget.note.content);
+    _undoStack.add(widget.note.content);
 
-    _textController = TextEditingController(text: widget.initialNote.content);
-    _undoStack.add(widget.initialNote.content);
+    if (widget.initialSearchQuery != null &&
+        widget.initialSearchQuery!.trim().isNotEmpty) {
+      _showInNoteSearch = true;
+      _inNoteSearchCtrl.text = widget.initialSearchQuery!.trim();
+      _inNoteQuery = _inNoteSearchCtrl.text;
+      _recomputeMatches();
+    }
 
-    _textController.addListener(_onEditorTextChanged);
+    _textController.addListener(_onTextChanged);
+    _inNoteSearchCtrl.addListener(_onSearchQueryChanged);
+
     _readScrollController.addListener(_onScrollUpdated);
     _editScrollController.addListener(_onScrollUpdated);
-
-    // تفعيل وضع "القهوة والقراءة" لإبقاء الشاشة مضاءة
-    widget.settings.applyWakeLock(true);
   }
 
   @override
   void dispose() {
-    _autoSaveTimer?.cancel();
-    if (_isDirty) {
-      widget.vault.saveNoteContent(_noteTitle, _textController.text);
-    }
-    widget.settings.applyWakeLock(false);
     WidgetsBinding.instance.removeObserver(this);
-    _textController.removeListener(_onEditorTextChanged);
-    _readScrollController.removeListener(_onScrollUpdated);
-    _editScrollController.removeListener(_onScrollUpdated);
+    _autoSaveTimer?.cancel();
+    if (_hasUnsavedChanges) {
+      v.saveNoteContent(widget.note, _textController.text);
+    }
     _textController.dispose();
-    _editorFocusNode.dispose();
     _readScrollController.dispose();
     _editScrollController.dispose();
+    _editorFocusNode.dispose();
+    _inNoteSearchCtrl.dispose();
     super.dispose();
   }
 
-  /// الحفظ التلقائي الفوري عند سحب ستارة الإشعارات أو وصول رسالة أو الخروج للخلفية
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached ||
-        state == AppLifecycleState.hidden) {
-      _flushImmediateAutoSave();
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _flushSaveNow();
     }
   }
 
   void _onScrollUpdated() {
-    if (_isDraggingFastThumb) return;
-    final ctrl = _activeScrollController;
-    if (!ctrl.hasClients) return;
-    final maxExtent = ctrl.position.maxScrollExtent;
-    final frac = maxExtent <= 0 ? 0.0 : (ctrl.offset / maxExtent).clamp(0.0, 1.0);
-    if ((frac - _scrollFraction).abs() > 0.005 && mounted) {
+    final activeCtrl =
+        _isEditMode ? _editScrollController : _readScrollController;
+    if (!activeCtrl.hasClients) return;
+
+    final maxScroll = activeCtrl.position.maxScrollExtent;
+    final offset = activeCtrl.offset;
+
+    final shouldShow = maxScroll > 260;
+    final shouldJumpTop = offset > (maxScroll * 0.45);
+
+    if (shouldShow != _showJumpButton || shouldJumpTop != _jumpToTop) {
       setState(() {
-        _scrollFraction = frac;
+        _showJumpButton = shouldShow;
+        _jumpToTop = shouldJumpTop;
       });
     }
   }
 
-  void _onEditorTextChanged() {
-    if (_isInternalTextChange) return;
-    final currentText = _textController.text;
+  void _onTextChanged() {
+    if (_isApplyingUndoRedo) return;
 
-    if (_undoStack.isEmpty || _undoStack.last != currentText) {
-      _undoStack.add(currentText);
-      if (_undoStack.length > 80) {
+    final current = _textController.text;
+    if (_undoStack.isEmpty || _undoStack.last != current) {
+      _undoStack.add(current);
+      if (_undoStack.length > 60) {
         _undoStack.removeAt(0);
       }
       _redoStack.clear();
     }
 
-    if (currentText != _lastSavedContent) {
-      _isDirty = true;
-      _autoSaveTimer?.cancel();
-      // حفظ تلقائي بعد 600ms من التوقف عن الكتابة
-      _autoSaveTimer = Timer(const Duration(milliseconds: 600), () {
-        _flushImmediateAutoSave();
-      });
-    }
-
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  Future<void> _flushImmediateAutoSave() async {
+    _hasUnsavedChanges = true;
     _autoSaveTimer?.cancel();
-    if (!_isDirty) return;
-    final textToSave = _textController.text;
-    _isDirty = false;
-    _lastSavedContent = textToSave;
-    await widget.vault.saveNoteContent(_noteTitle, textToSave);
+    _autoSaveTimer = Timer(const Duration(milliseconds: 600), _flushSaveNow);
+
+    if (_showInNoteSearch && _inNoteQuery.isNotEmpty) {
+      _recomputeMatches();
+    }
+    setState(() {});
   }
 
-  /// التبديل بين وضعي القراءة والتحرير مع الحفاظ على نفس الموضع النسبي للسطور (prevScrollFraction)
-  Future<void> _toggleEditReadMode(bool targetEditMode) async {
-    if (_isEditMode == targetEditMode) return;
+  Future<void> _flushSaveNow() async {
+    if (!_hasUnsavedChanges) return;
+    _autoSaveTimer?.cancel();
+    if (mounted) setState(() => _isSaving = true);
+    await v.saveNoteContent(widget.note, _textController.text);
+    _hasUnsavedChanges = false;
+    if (mounted) setState(() => _isSaving = false);
+  }
 
-    double prevScrollFraction = _scrollFraction;
-    if (_activeScrollController.hasClients) {
-      final maxExt = _activeScrollController.position.maxScrollExtent;
-      prevScrollFraction = maxExt <= 0
-          ? 0.0
-          : (_activeScrollController.offset / maxExt).clamp(0.0, 1.0);
+  void _onSearchQueryChanged() {
+    final q = _inNoteSearchCtrl.text.trim();
+    if (q == _inNoteQuery) return;
+    setState(() {
+      _inNoteQuery = q;
+      _recomputeMatches();
+    });
+  }
+
+  void _recomputeMatches() {
+    if (_inNoteQuery.isEmpty) {
+      _matches = [];
+      _currentMatchIndex = 0;
+      return;
+    }
+    _matches = SmartArabicEngine.findSmartMatchRanges(
+      _textController.text,
+      _inNoteQuery,
+    );
+    if (_matches.isEmpty) {
+      _currentMatchIndex = 0;
+    } else if (_currentMatchIndex >= _matches.length) {
+      _currentMatchIndex = 0;
+    }
+  }
+
+  void _jumpToMatch(int delta) {
+    if (_matches.isEmpty) return;
+    RuknHaptics.selection();
+    setState(() {
+      _currentMatchIndex =
+          (_currentMatchIndex + delta + _matches.length) % _matches.length;
+    });
+
+    final match = _matches[_currentMatchIndex];
+    final textLen = _textController.text.length;
+    if (textLen == 0) return;
+
+    final fraction = (match.start / textLen).clamp(0.0, 1.0);
+    final activeCtrl =
+        _isEditMode ? _editScrollController : _readScrollController;
+    if (activeCtrl.hasClients) {
+      final target = activeCtrl.position.maxScrollExtent * fraction;
+      activeCtrl.animateTo(
+        target,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
+      );
     }
 
-    if (!targetEditMode) {
-      await _flushImmediateAutoSave();
-      FocusScope.of(context).unfocus();
+    if (_isEditMode) {
+      _textController.selection = TextSelection(
+        baseOffset: match.start,
+        extentOffset: match.end,
+      );
+    }
+  }
+
+  // التبديل السلس بين وضع القراءة ووضع التحرير مع حفظ نسبة التمرير
+  void _toggleReadEditMode() {
+    RuknHaptics.light();
+    double scrollFraction = 0.0;
+    final oldCtrl =
+        _isEditMode ? _editScrollController : _readScrollController;
+    if (oldCtrl.hasClients && oldCtrl.position.maxScrollExtent > 0) {
+      scrollFraction =
+          (oldCtrl.offset / oldCtrl.position.maxScrollExtent).clamp(0.0, 1.0);
+    }
+
+    if (_isEditMode) {
+      _flushSaveNow();
+      _editorFocusNode.unfocus();
     }
 
     setState(() {
-      _isEditMode = targetEditMode;
-      _showJumpMenuPopup = false;
+      _isEditMode = !_isEditMode;
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final newCtrl = _activeScrollController;
-      if (newCtrl.hasClients) {
-        final newMax = newCtrl.position.maxScrollExtent;
-        newCtrl.jumpTo((prevScrollFraction * newMax).clamp(0.0, newMax));
+      final newCtrl =
+          _isEditMode ? _editScrollController : _readScrollController;
+      if (newCtrl.hasClients && newCtrl.position.maxScrollExtent > 0) {
+        newCtrl.jumpTo(newCtrl.position.maxScrollExtent * scrollFraction);
       }
-      if (targetEditMode) {
-        _editorFocusNode.requestFocus();
-      }
+      _onScrollUpdated();
     });
   }
 
-  /// إيقاف اندفاع التمرير السريع (stopOngoingScrollFling) فور لمس مقبض التمرير الجانبي
-  void _stopOngoingScrollFling() {
-    final ctrl = _activeScrollController;
-    if (ctrl.hasClients) {
-      ctrl.jumpTo(ctrl.offset);
-    }
-  }
+  // إيقاف الاندفاع اللحظي وتنفيذ القفز لأول/آخر المستند
+  void _performQuickJump() {
+    RuknHaptics.light();
+    final activeCtrl =
+        _isEditMode ? _editScrollController : _readScrollController;
+    if (!activeCtrl.hasClients) return;
 
-  void _scrollToFraction(double fraction) {
-    final clamped = fraction.clamp(0.0, 1.0);
-    setState(() {
-      _scrollFraction = clamped;
-    });
-    final ctrl = _activeScrollController;
-    if (ctrl.hasClients) {
-      final maxExt = ctrl.position.maxScrollExtent;
-      ctrl.jumpTo(clamped * maxExt);
-    }
-  }
-
-  void _jumpToDocumentEdge({required bool toTop}) {
-    setState(() => _showJumpMenuPopup = false);
-    final ctrl = _activeScrollController;
-    if (!ctrl.hasClients) return;
-    final target = toTop ? 0.0 : ctrl.position.maxScrollExtent;
-    ctrl.animateTo(
+    final target = _jumpToTop ? 0.0 : activeCtrl.position.maxScrollExtent;
+    activeCtrl.animateTo(
       target,
-      duration: const Duration(milliseconds: 280),
+      duration: const Duration(milliseconds: 320),
       curve: Curves.easeOutCubic,
     );
   }
 
-  /// نافذة إعادة تسمية الملف عند الضغط على العنوان في الشريط العلوي
-  Future<void> _showRenameFromHeaderDialog() async {
-    final ctrl = TextEditingController(text: _noteTitle);
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'إعادة تسمية الملف',
-      subtitle: 'سيتم تحديث اسم الملف وجميع نسخه الآمنة تلقائياً',
-      headerIcon: Icons.drive_file_rename_outline_rounded,
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        textDirection: TextDirection.rtl,
-        style: TextStyle(
-          color: widget.settings.primaryTextColor,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
-        decoration: InputDecoration(
-          filled: true,
-          fillColor: widget.settings.scaffoldBgColor,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-        ),
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: widget.settings.activeTheme.primary,
-            onTap: () async {
-              await _flushImmediateAutoSave();
-              try {
-                final updated = await widget.vault.renameNote(
-                  oldTitle: _noteTitle,
-                  newRawTitle: ctrl.text,
-                );
-                if (mounted) {
-                  Navigator.of(context).pop();
-                  if (updated != null) {
-                    setState(() => _noteTitle = updated.title);
-                    showRuknToast(context, 'تم تغيير الاسم إلى: $_noteTitle');
-                  }
-                }
-              } catch (_) {
-                if (mounted) {
-                  showRuknToast(
-                    context,
-                    'يوجد ملف آخر بنفس هذا الاسم!',
-                    backgroundColor: const Color(0xFFDC2626),
-                  );
-                }
-              }
-            },
-            child: const Text(
-              'حفظ الاسم',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// نافذة إعادة حجم الخط إلى 100% عند الضغط على النسبة المئوية في كبسولة التكبير
-  Future<void> _showResetZoomDialog() async {
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'حجم عرض النص (${widget.settings.zoomPercent}%)',
-      subtitle: 'هل ترغب في إعادة حجم النص إلى الوضع القياسي 100%؟',
-      headerIcon: Icons.zoom_in_rounded,
-      content: Text(
-        'يمكنك دائماً التكبير والتصغير من 50% حتى 250% بخطوات 10% عبر كبسولة التكبير العلوية.',
-        style: TextStyle(
-          color: widget.settings.primaryTextColor,
-          fontSize: 14.5,
-          height: 1.5,
-        ),
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.activeTheme.primary,
-            onTap: () {
-              widget.settings.setZoomPercent(100);
-              Navigator.of(context).pop();
-            },
-            child: const Text(
-              'إعادة إلى 100%',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ==================== تنفيذ أدوات التحرير الـ 15 ====================
+  // ===========================================================================
+  // تنفيذ أدوات شريط التحرير الذكي
+  // ===========================================================================
   Future<void> _executeEditorTool(String toolId) async {
-    final fullText = _textController.text;
-    final sel = _textController.selection;
-    final start = sel.isValid ? sel.start.clamp(0, fullText.length) : fullText.length;
-    final end = sel.isValid ? sel.end.clamp(0, fullText.length) : fullText.length;
-
+    RuknHaptics.light();
     switch (toolId) {
       case 'undo':
         if (_undoStack.length > 1) {
-          _isInternalTextChange = true;
+          _isApplyingUndoRedo = true;
           final current = _undoStack.removeLast();
           _redoStack.add(current);
           final prev = _undoStack.last;
@@ -375,1169 +279,1292 @@ class _RuknEditorScreenState extends State<RuknEditorScreen>
             text: prev,
             selection: TextSelection.collapsed(offset: prev.length),
           );
-          _isInternalTextChange = false;
-          _isDirty = true;
-          _flushImmediateAutoSave();
+          _isApplyingUndoRedo = false;
+          _hasUnsavedChanges = true;
+          _flushSaveNow();
           setState(() {});
         } else {
-          showRuknToast(context, 'لا توجد خطوات سابقة للتراجع');
+          showRuknToast(context, s, 'لا توجد خطوات سابقة للتراجع');
         }
         break;
 
       case 'redo':
         if (_redoStack.isNotEmpty) {
-          _isInternalTextChange = true;
+          _isApplyingUndoRedo = true;
           final next = _redoStack.removeLast();
           _undoStack.add(next);
           _textController.value = TextEditingValue(
             text: next,
             selection: TextSelection.collapsed(offset: next.length),
           );
-          _isInternalTextChange = false;
-          _isDirty = true;
-          _flushImmediateAutoSave();
+          _isApplyingUndoRedo = false;
+          _hasUnsavedChanges = true;
+          _flushSaveNow();
           setState(() {});
         } else {
-          showRuknToast(context, 'لا توجد خطوات للإعادة');
+          showRuknToast(context, s, 'لا توجد خطوات للإعادة');
         }
         break;
 
-      case 'copy':
-        final toCopy = start != end ? fullText.substring(start, end) : fullText;
-        await Clipboard.setData(ClipboardData(text: toCopy));
-        if (mounted) {
-          showRuknToast(
-            context,
-            start != end ? 'تم نسخ النص المحدد' : 'تم نسخ كامل النص',
-          );
-        }
-        break;
-
-      case 'cut':
-        if (start != end) {
-          final cutPart = fullText.substring(start, end);
-          await Clipboard.setData(ClipboardData(text: cutPart));
-          final updated = fullText.replaceRange(start, end, '');
-          _textController.value = TextEditingValue(
-            text: updated,
-            selection: TextSelection.collapsed(offset: start),
-          );
-          if (mounted) showRuknToast(context, 'تم قص النص المحدد');
-        } else {
-          showRuknToast(context, 'حدد نصاً أولاً لقصه');
-        }
+      case 'copy_all':
+        await Clipboard.setData(ClipboardData(text: _textController.text));
+        if (mounted) showRuknToast(context, s, 'تم نسخ كامل النص للحافظة');
         break;
 
       case 'paste':
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         final clip = data?.text ?? '';
         if (clip.isNotEmpty) {
-          final updated = fullText.replaceRange(start, end, clip);
-          _textController.value = TextEditingValue(
-            text: updated,
-            selection: TextSelection.collapsed(offset: start + clip.length),
-          );
+          _insertAtCursor(clip);
         }
         break;
 
-      case 'select_all':
-        _editorFocusNode.requestFocus();
-        _textController.selection =
-            TextSelection(baseOffset: 0, extentOffset: fullText.length);
-        break;
-
-      case 'select_up':
-        _editorFocusNode.requestFocus();
-        _textController.selection =
-            TextSelection(baseOffset: end, extentOffset: 0);
-        break;
-
-      case 'select_down':
-        _editorFocusNode.requestFocus();
-        _textController.selection =
-            TextSelection(baseOffset: start, extentOffset: fullText.length);
+      case 'search':
+        setState(() {
+          _showInNoteSearch = !_showInNoteSearch;
+          if (!_showInNoteSearch) {
+            _inNoteSearchCtrl.clear();
+          }
+        });
         break;
 
       case 'auto_format':
-        final formatted = SmartArabicEngine.autoFormatArabicText(fullText);
-        _textController.value = TextEditingValue(
-          text: formatted,
-          selection: TextSelection.collapsed(offset: formatted.length),
-        );
-        showRuknToast(
-          context,
-          'تم التنسيق الآلي وضبط الفواصل والفقرات ✨',
-          icon: Icons.auto_fix_high_rounded,
-        );
+        final formatted =
+            SmartArabicEngine.autoFormatArabicText(_textController.text);
+        _replaceFullText(formatted);
+        showRuknToast(context, s, 'تم تنسيق النص وترتيب المسافات وعلامات الترقيم');
         break;
 
-      case 'smart_calc':
-        final res = SmartArabicEngine.calculateAndAppendSum(fullText);
-        final count = res['count'] as int;
-        if (count == 0) {
+      case 'calc_sum':
+        final sel = _textController.selection;
+        final targetText = (sel.isValid && !sel.isCollapsed)
+            ? _textController.text.substring(sel.start, sel.end)
+            : _textController.text;
+        final res = SmartArabicEngine.calculateNumbersInText(targetText);
+        if (res == null) {
           showRuknToast(
             context,
-            'لم يتم العثور على أرقام في النص لجمعها',
-            icon: Icons.info_outline_rounded,
+            s,
+            'لم يتم العثور على أرقام في النص لحسابها',
+            isError: true,
           );
         } else {
-          final updated = res['updatedText'] as String;
-          final sumStr = res['formattedSum'] as String;
-          _textController.value = TextEditingValue(
-            text: updated,
-            selection: TextSelection.collapsed(offset: updated.length),
-          );
-          showRuknToast(
-            context,
-            'تم جمع $count رقم • الإجمالي: $sumStr 💰',
-            icon: Icons.functions_rounded,
-          );
+          await _showSumReportModal(res.count, res.sum, res.formattedReport);
         }
         break;
 
-      case 'num_convert':
-        if (start != end) {
-          final convertedSel = SmartArabicEngine.toggleArabicWesternNumbers(
-            fullText.substring(start, end),
-          );
-          final updated = fullText.replaceRange(start, end, convertedSel);
-          _textController.value = TextEditingValue(
-            text: updated,
-            selection: TextSelection(
-              baseOffset: start,
-              extentOffset: start + convertedSel.length,
-            ),
-          );
-        } else {
-          final convertedAll =
-              SmartArabicEngine.toggleArabicWesternNumbers(fullText);
-          _textController.value = TextEditingValue(
-            text: convertedAll,
-            selection: TextSelection.collapsed(
-              offset: start.clamp(0, convertedAll.length),
-            ),
-          );
-        }
-        showRuknToast(context, 'تم تحويل صيغة الأرقام (١٢٣ ↔ 123)');
-        break;
-
-      case 'checklist':
-        final updated =
-            SmartArabicEngine.toggleChecklistAtCursor(fullText, start);
-        _textController.value = TextEditingValue(
-          text: updated,
-          selection: TextSelection.collapsed(
-            offset: (start + 2).clamp(0, updated.length),
-          ),
+      case 'convert_numbers':
+        final converted = SmartArabicEngine.toggleArabicIndicAndWesternDigits(
+          _textController.text,
         );
+        _replaceFullText(converted);
+        showRuknToast(context, s, 'تم تبديل صيغة الأرقام (١٢٣ ⇄ 123)');
         break;
 
-      case 'datetime':
-        final stamp = SmartArabicEngine.getInsertableDateTimeString();
-        final insertStr =
-            (start > 0 && !fullText.substring(0, start).endsWith('\n'))
-                ? '\n$stamp\n'
-                : '$stamp\n';
-        final updated = fullText.replaceRange(start, end, insertStr);
-        _textController.value = TextEditingValue(
-          text: updated,
-          selection:
-              TextSelection.collapsed(offset: start + insertStr.length),
-        );
+      case 'date_stamp':
+        final stamp = SmartArabicEngine.getFormattedHijriAndGregorianNow();
+        _insertAtCursor('\n$stamp\n');
         break;
 
-      case 'signature':
-        if (widget.settings.signatureText.trim().isEmpty) {
-          _showQuickSignatureSetupDialog();
-        } else {
-          final sig = '\n\n✒️ ${widget.settings.signatureText.trim()}\n';
-          final updated = fullText.replaceRange(start, end, sig);
-          _textController.value = TextEditingValue(
-            text: updated,
-            selection: TextSelection.collapsed(offset: start + sig.length),
+      case 'bullet_list':
+        _insertAtCursor('\n• ');
+        break;
+
+      case 'divider':
+        _insertAtCursor('\n────────────────────\n');
+        break;
+
+      case 'share_card':
+        await _flushSaveNow();
+        if (mounted) {
+          await showRuknShareCardStudio(
+            context: context,
+            settings: s,
+            noteTitle: widget.note.title,
+            noteContent: _textController.text,
           );
-          showRuknToast(context, 'تم إدراج التوقيع');
         }
         break;
 
-      case 'find_replace':
-        _showSmartFindReplaceDialog();
+      case 'clear_all':
+        if (_textController.text.trim().isEmpty) return;
+        await _confirmClearAllText();
         break;
     }
   }
 
-  /// نافذة إعداد التوقيع السريعة إذا ضغط المستخدم على أداة التوقيع وهو فارغ
-  Future<void> _showQuickSignatureSetupDialog() async {
-    final sigCtrl =
-        TextEditingController(text: widget.settings.signatureText);
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'إعداد التوقيع الشخصي ✒️',
-      subtitle: 'اكتب توقيعك ليتم حفظه وإدراجه بلمسة زر دائماً',
-      headerIcon: Icons.draw_rounded,
-      content: TextField(
-        controller: sigCtrl,
-        autofocus: true,
-        maxLines: 2,
-        textDirection: TextDirection.rtl,
-        style: TextStyle(color: widget.settings.primaryTextColor),
-        decoration: InputDecoration(
-          hintText: 'مثال: كتبه أخوكم أبو فهد — الرياض',
-          filled: true,
-          fillColor: widget.settings.scaffoldBgColor,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-        ),
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.activeTheme.primary,
-            onTap: () async {
-              final text = sigCtrl.text.trim();
-              await widget.settings.setSignatureText(text);
-              if (mounted) {
-                Navigator.of(context).pop();
-                if (text.isNotEmpty) {
-                  _executeEditorTool('signature');
-                }
-              }
-            },
-            child: const Text(
-              'حفظ وإدراج التوقيع',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
+  void _insertAtCursor(String insertion) {
+    final text = _textController.text;
+    final sel = _textController.selection;
+    final start = sel.isValid ? sel.start : text.length;
+    final end = sel.isValid ? sel.end : text.length;
+
+    final newText = text.replaceRange(start, end, insertion);
+    _textController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + insertion.length),
     );
   }
 
-  /// نافذة "بحث واستبدال" المعتمدة على محرك البحث العربي الذكي
-  Future<void> _showSmartFindReplaceDialog() async {
-    final findCtrl = TextEditingController(text: _activeHighlightQuery);
-    final replaceCtrl = TextEditingController();
-
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'بحث واستبدال ذكي',
-      subtitle: 'يتجاهل التشكيل ويوحّد الهمزات والتاء المربوطة تلقائياً',
-      headerIcon: Icons.find_replace_rounded,
-      content: StatefulBuilder(
-        builder: (ctx, setModalState) {
-          final matchesCount = SmartArabicEngine.findSmartMatchRanges(
-            _textController.text,
-            findCtrl.text,
-          ).length;
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: findCtrl,
-                autofocus: true,
-                onChanged: (_) => setModalState(() {}),
-                style: TextStyle(color: widget.settings.primaryTextColor),
-                decoration: InputDecoration(
-                  labelText: 'ابحث عن الكلمة أو العبارة...',
-                  suffixText: findCtrl.text.trim().isEmpty
-                      ? ''
-                      : '$matchesCount تطابق',
-                  filled: true,
-                  fillColor: widget.settings.scaffoldBgColor,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: replaceCtrl,
-                style: TextStyle(color: widget.settings.primaryTextColor),
-                decoration: InputDecoration(
-                  labelText: 'استبدال بـ...',
-                  filled: true,
-                  fillColor: widget.settings.scaffoldBgColor,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.activeTheme.primary,
-            onTap: () {
-              final q = findCtrl.text.trim();
-              if (q.isEmpty) return;
-              final matches = SmartArabicEngine.findSmartMatchRanges(
-                _textController.text,
-                q,
-              );
-              if (matches.isEmpty) {
-                showRuknToast(context, 'لا توجد نتائج مطابقة');
-                return;
-              }
-              final replaced = SmartArabicEngine.smartReplaceAll(
-                _textController.text,
-                q,
-                replaceCtrl.text,
-              );
-              _textController.value = TextEditingValue(
-                text: replaced,
-                selection: TextSelection.collapsed(offset: replaced.length),
-              );
-              setState(() => _activeHighlightQuery = '');
-              Navigator.of(context).pop();
-              showRuknToast(
-                context,
-                'تم استبدال ${matches.length} تطابق بنجاح',
-              );
-            },
-            child: const Text(
-              'استبدال الكل',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.activeTheme.primary,
-            elevation: 0,
-            onTap: () {
-              setState(() {
-                _activeHighlightQuery = findCtrl.text.trim();
-              });
-              Navigator.of(context).pop();
-              if (_isEditMode && _activeHighlightQuery.isNotEmpty) {
-                _toggleEditReadMode(false);
-              }
-            },
-            child: Text(
-              'تظليل النتائج',
-              style: TextStyle(
-                color: widget.settings.activeTheme.primary,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
+  void _replaceFullText(String newText) {
+    _textController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newText.length),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = widget.settings.activeTheme;
-    final stats = SmartArabicEngine.computeStats(_textController.text);
-    final zoomScale = widget.settings.zoomPercent / 100.0;
-    final scaledFontSize = (18.0 * zoomScale).clamp(11.0, 44.0);
-
-    final docTextStyle = TextStyle(
-      fontSize: scaledFontSize,
-      height: 1.75,
-      color: widget.settings.primaryTextColor,
-      fontFamily: widget.settings.activeFontFamily,
-    );
-
-    return PopScope(
-      canPop: true,
-      onPopInvoked: (_) async {
-        await _flushImmediateAutoSave();
-      },
-      child: Scaffold(
-        backgroundColor: widget.settings.scaffoldBgColor,
-        body: Column(
+  Future<void> _showSumReportModal(
+    int count,
+    double sum,
+    String report,
+  ) async {
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 1. الشريط العلوي للمستند (يميناً: رجوع | وسطاً: العنوان | يساراً: كبسولة التكبير)
-            _buildDocumentTopBar(theme),
-
-            // 2. شريط أدوات التحرير القابل للتخصيص (يظهر في وضع التحرير)
-            if (_isEditMode) _buildCustomizableEditorToolbar(theme),
-
-            // 3. ورقة المستند + شريط التمرير السريع الجانبي (يسار الورقة) + زر الانتقال العائم
-            Expanded(
-              child: Container(
-                margin: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                decoration: BoxDecoration(
-                  color: widget.settings.paperBgColor,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: widget.settings.borderColor,
-                    width: 1.1,
+            Row(
+              children: [
+                Icon(Icons.calculate_outlined, color: s.accentColor, size: 24),
+                const SizedBox(width: 10),
+                Text(
+                  'الحاسبة الذكية للأرقام',
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    color: s.textMainColor,
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
                 ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: Stack(
-                    children: [
-                      // محتوى الورقة (وضع القراءة أو وضع التحرير)
-                      Positioned.fill(
-                        child: _isEditMode
-                            ? SingleChildScrollView(
-                                controller: _editScrollController,
-                                physics: const BouncingScrollPhysics(),
-                                padding:
-                                    const EdgeInsets.fromLTRB(34, 18, 18, 80),
-                                child: TextField(
-                                  controller: _textController,
-                                  focusNode: _editorFocusNode,
-                                  maxLines: null,
-                                  textDirection: TextDirection.rtl,
-                                  style: docTextStyle,
-                                  decoration: InputDecoration(
-                                    border: InputBorder.none,
-                                    hintText:
-                                        'ابدأ بتدوين أفكارك، قصائدك، أو التزاماتك هنا...',
-                                    hintStyle: docTextStyle.copyWith(
-                                      color: widget.settings.secondaryTextColor
-                                          .withOpacity(0.55),
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : GestureDetector(
-                                onDoubleTap: () => _toggleEditReadMode(true),
-                                child: SingleChildScrollView(
-                                  controller: _readScrollController,
-                                  physics: const BouncingScrollPhysics(),
-                                  padding: const EdgeInsets.fromLTRB(
-                                      34, 18, 18, 80),
-                                  child: _textController.text.isEmpty
-                                      ? Text(
-                                          '(المستند فارغ — اضغط على «تحرير الملف» بالأسفل أو انقر مرتين للكتابة)',
-                                          style: docTextStyle.copyWith(
-                                            color: widget
-                                                .settings.secondaryTextColor,
-                                          ),
-                                        )
-                                      : SelectableText.rich(
-                                          SmartArabicEngine
-                                              .buildHighlightedTextSpan(
-                                            text: _textController.text,
-                                            query: _activeHighlightQuery,
-                                            baseStyle: docTextStyle,
-                                          ),
-                                          textDirection: TextDirection.rtl,
-                                        ),
-                                ),
-                              ),
-                      ),
-
-                      // شريط التمرير السريع الجانبي في أقصى يسار الورقة (LAYOUT_DIRECTION_LTR)
-                      Positioned(
-                        left: 2,
-                        top: 14,
-                        bottom: 72,
-                        child: Directionality(
-                          textDirection: TextDirection.ltr,
-                          child: _buildLeftFastScrollbar(theme),
-                        ),
-                      ),
-
-                      // القائمة المنبثقة لزر القفز السريع (↑ أول المستند | ↓ آخر المستند)
-                      if (_showJumpMenuPopup)
-                        Positioned(
-                          left: 14,
-                          bottom: 68,
-                          child: _buildQuickJumpPopupCard(theme),
-                        ),
-
-                      // زر الانتقال السريع العائم (أسفل يسار الورقة — بأسلوب TextPad)
-                      Positioned(
-                        left: 12,
-                        bottom: 12,
-                        child: RuknSpringButton(
-                          width: 44,
-                          height: 44,
-                          borderRadius: 22,
-                          padding: EdgeInsets.zero,
-                          margin: EdgeInsets.zero,
-                          backgroundColor: theme.primary,
-                          borderColor: theme.accentGold,
-                          elevation: 4,
-                          onTap: () {
-                            setState(() {
-                              _showJumpMenuPopup = !_showJumpMenuPopup;
-                            });
-                          },
-                          child: const Icon(
-                            Icons.swap_vert_rounded,
-                            color: Colors.white,
-                            size: 23,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: s.bgColor,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: s.borderColor),
+              ),
+              child: Text(
+                report,
+                style: TextStyle(
+                  fontFamily: s.fontFamily,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  height: 1.6,
+                  color: s.textMainColor,
                 ),
               ),
             ),
-
-            // 4. شريط الإحصائيات السفلي (الكلمات • الحروف • الأسطر)
-            _buildStatisticsBar(stats, theme),
-
-            // 5. شريط أزرار وضع القراءة / التحرير السفلي
-            _buildBottomDocumentActions(theme),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'إغلاق',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: s.primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    icon: const Icon(Icons.add_task_rounded, size: 18),
+                    label: Text(
+                      'إدراج المجموع في المذكرة',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      _insertAtCursor('\n$report\n');
+                    },
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),
     );
   }
 
-  /// الشريط العلوي للمستند (يميناً: رجوع | وسطاً: العنوان | يساراً: كبسولة التكبير)
-  Widget _buildDocumentTopBar(GulfThemeData theme) {
-    final topInset = MediaQuery.of(context).padding.top;
-
-    return Container(
-      padding: EdgeInsets.fromLTRB(12, topInset + 10, 12, 12),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [theme.primaryDark, theme.primary],
-        ),
-        border: Border(
-          bottom: BorderSide(
-            color: theme.accentGold.withOpacity(0.55),
-            width: 1.1,
-          ),
-        ),
-      ),
-      child: Row(
-        textDirection: TextDirection.rtl,
-        children: [
-          // يميناً: زر "→ رجوع"
-          RuknSpringButton(
-            height: 38,
-            margin: EdgeInsets.zero,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            backgroundColor: Colors.white.withOpacity(0.14),
-            borderColor: theme.accentGold.withOpacity(0.45),
-            borderRadius: 12,
-            elevation: 0,
-            onTap: () async {
-              await _flushImmediateAutoSave();
-              if (mounted) {
-                Navigator.of(context).pop();
-              }
-            },
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '→ رجوع',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13.5,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-
-          // وسطاً: عنوان الملف (الضغط عليه يفتح نافذة إعادة تسمية الملف)
-          Expanded(
-            child: GestureDetector(
-              onTap: _showRenameFromHeaderDialog,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.16),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Flexible(
-                      child: Text(
-                        _noteTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15.5,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    Icon(
-                      Icons.edit_note_rounded,
-                      color: theme.accentGold,
-                      size: 17,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-
-          // يساراً: كبسولة التكبير والتصغير الموحدة [ ＋ | 100% | － ]
-          Container(
-            height: 38,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.14),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: theme.accentGold.withOpacity(0.45),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              textDirection: TextDirection.rtl,
-              children: [
-                // زر تكبير ＋
-                InkWell(
-                  onTap: () {
-                    RuknHaptics.selectionClick();
-                    widget.settings
-                        .setZoomPercent(widget.settings.zoomPercent + 10);
-                  },
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                    child: Text(
-                      '＋',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-                Container(
-                  width: 1,
-                  height: 20,
-                  color: Colors.white.withOpacity(0.25),
-                ),
-                // النسبة المئوية (الضغط عليها يفتح نافذة إعادة الحجم إلى 100%)
-                InkWell(
-                  onTap: () {
-                    RuknHaptics.lightTap();
-                    _showResetZoomDialog();
-                  },
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                    child: Text(
-                      '${widget.settings.zoomPercent}%',
-                      style: TextStyle(
-                        color: theme.accentGold,
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-                Container(
-                  width: 1,
-                  height: 20,
-                  color: Colors.white.withOpacity(0.25),
-                ),
-                // زر تصغير －
-                InkWell(
-                  onTap: () {
-                    RuknHaptics.selectionClick();
-                    widget.settings
-                        .setZoomPercent(widget.settings.zoomPercent - 10);
-                  },
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                    child: Text(
-                      '－',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// شريط أدوات التحرير القابل للتخصيص
-  Widget _buildCustomizableEditorToolbar(GulfThemeData theme) {
-    final activeTools = widget.settings.activeOrderedTools;
-    final iconsOnly = widget.settings.toolbarIconsOnly;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-      decoration: BoxDecoration(
-        color: widget.settings.cardBgColor,
-        border: Border(
-          bottom: BorderSide(color: widget.settings.borderColor),
-        ),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        child: Row(
-          children: activeTools.map((tool) {
-            return Padding(
-              padding: const EdgeInsets.only(left: 7),
-              child: RuknSpringButton(
-                height: 38,
-                margin: const EdgeInsets.only(bottom: 2),
-                padding: EdgeInsets.symmetric(
-                  horizontal: iconsOnly ? 11 : 12,
-                  vertical: 6,
-                ),
-                backgroundColor: widget.settings.scaffoldBgColor,
-                borderColor: theme.primary.withOpacity(0.35),
-                borderRadius: 11,
-                elevation: 1,
-                onTap: () => _executeEditorTool(tool.id),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(tool.icon, color: theme.primary, size: 18),
-                    if (!iconsOnly) ...[
-                      const SizedBox(width: 6),
-                      Text(
-                        tool.label,
-                        style: TextStyle(
-                          color: widget.settings.primaryTextColor,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-  }
-
-  /// شريط التمرير السريع الجانبي (يسار الورقة) مع فقاعة النسبة المئوية والإمساك الفوري
-  Widget _buildLeftFastScrollbar(GulfThemeData theme) {
-    return LayoutBuilder(
-      builder: (ctx, constraints) {
-        final trackHeight = constraints.maxHeight;
-        const thumbHeight = 46.0;
-        final maxTop = (trackHeight - thumbHeight).clamp(0.0, double.infinity);
-        final thumbTop = (_scrollFraction * maxTop).clamp(0.0, maxTop);
-        final percentInt = (_scrollFraction * 100).round().clamp(0, 100);
-
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onVerticalDragDown: (_) {
-            // إيقاف اندفاع الصفحة فوراً (stopOngoingScrollFling) من أول لمسة
-            _stopOngoingScrollFling();
-            setState(() => _isDraggingFastThumb = true);
-          },
-          onVerticalDragStart: (details) {
-            _stopOngoingScrollFling();
-            setState(() => _isDraggingFastThumb = true);
-            if (trackHeight > 0) {
-              _scrollToFraction(details.localPosition.dy / trackHeight);
-            }
-          },
-          onVerticalDragUpdate: (details) {
-            if (trackHeight > 0) {
-              _scrollToFraction(details.localPosition.dy / trackHeight);
-            }
-          },
-          onVerticalDragEnd: (_) {
-            setState(() => _isDraggingFastThumb = false);
-          },
-          onVerticalDragCancel: () {
-            setState(() => _isDraggingFastThumb = false);
-          },
-          child: SizedBox(
-            width: _isDraggingFastThumb ? 96 : 26,
-            height: trackHeight,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                // مسار التمرير الجانبي
-                Positioned(
-                  left: 6,
-                  top: 0,
-                  bottom: 0,
-                  child: Container(
-                    width: 4,
-                    decoration: BoxDecoration(
-                      color: theme.primary.withOpacity(0.14),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                ),
-                // مقبض السحب
-                Positioned(
-                  left: 2,
-                  top: thumbTop,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 12,
-                        height: thumbHeight,
-                        decoration: BoxDecoration(
-                          color: _isDraggingFastThumb
-                              ? theme.accentGold
-                              : theme.primary.withOpacity(0.75),
-                          borderRadius: BorderRadius.circular(8),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.18),
-                              blurRadius: 4,
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (_isDraggingFastThumb) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: theme.primaryDark,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: theme.accentGold),
-                          ),
-                          child: Text(
-                            '$percentInt%',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  /// بطاقة الانتقال السريع المنبثقة فوق الزر العائم (↑ أول المستند | ↓ آخر المستند)
-  Widget _buildQuickJumpPopupCard(GulfThemeData theme) {
-    return Container(
-      width: 155,
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: widget.settings.cardBgColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: theme.accentGold, width: 1.2),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.22),
-            blurRadius: 14,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          RuknSpringButton(
-            height: 38,
-            margin: const EdgeInsets.only(bottom: 6),
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => _jumpToDocumentEdge(toTop: true),
-            child: Text(
-              '↑  أول المستند',
+  Future<void> _confirmClearAllText() async {
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'مسح كامل النص؟',
               style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
+                fontFamily: s.fontFamily,
+                fontSize: 16.5,
+                fontWeight: FontWeight.w800,
+                color: const Color(0xFFDC2626),
               ),
             ),
-          ),
-          RuknSpringButton(
-            height: 38,
-            margin: EdgeInsets.zero,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => _jumpToDocumentEdge(toTop: false),
-            child: Text(
-              '↓  آخر المستند',
+            const SizedBox(height: 8),
+            Text(
+              'سيتم تفريغ محتوى المذكرة بالكامل (يمكنك التراجع عبر زر التراجع فوراً).',
               style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
+                fontFamily: s.fontFamily,
+                fontSize: 13.5,
+                color: s.textMainColor,
               ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// شريط الإحصائيات السفلي: الكلمات: X • الحروف: Y • الأسطر: Z
-  Widget _buildStatisticsBar(DocumentStats stats, GulfThemeData theme) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-      decoration: BoxDecoration(
-        color: widget.settings.cardBgColor,
-        border: Border(
-          top: BorderSide(color: widget.settings.borderColor),
-        ),
-      ),
-      child: Text(
-        'الكلمات: ${stats.words}   •   الحروف: ${stats.chars}   •   الأسطر: ${stats.lines}',
-        textAlign: TextAlign.center,
-        style: TextStyle(
-          fontSize: 12.5,
-          fontWeight: FontWeight.bold,
-          color: widget.settings.secondaryTextColor,
-        ),
-      ),
-    );
-  }
-
-  /// شريط أزرار وضع القراءة / التحرير السفلي
-  Widget _buildBottomDocumentActions(GulfThemeData theme) {
-    final bottomInset = MediaQuery.of(context).padding.bottom;
-
-    return Container(
-      padding: EdgeInsets.fromLTRB(14, 8, 14, bottomInset + 10),
-      decoration: BoxDecoration(
-        color: widget.settings.cardBgColor,
-        border: Border(
-          top: BorderSide(color: widget.settings.borderColor),
-        ),
-      ),
-      child: _isEditMode
-          ? Row(
+            const SizedBox(height: 16),
+            Row(
               children: [
                 Expanded(
-                  flex: 2,
-                  child: RuknSpringButton(
-                    height: 45,
-                    margin: const EdgeInsets.only(bottom: 3),
-                    gradient: LinearGradient(
-                      colors: [theme.primaryDark, theme.primary],
-                    ),
-                    borderColor: theme.accentGold,
-                    onTap: () => _toggleEditReadMode(false),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.check_circle_rounded,
-                            color: Colors.white, size: 19),
-                        SizedBox(width: 8),
-                        Text(
-                          'حفظ والانتقال لوضع القراءة',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'إلغاء',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  flex: 1,
-                  child: RuknSpringButton(
-                    height: 45,
-                    margin: const EdgeInsets.only(bottom: 3),
-                    backgroundColor: widget.settings.scaffoldBgColor,
-                    borderColor: theme.accentGold,
-                    elevation: 1,
-                    onTap: () async {
-                      await _flushImmediateAutoSave();
-                      if (mounted) {
-                        showRuknShareCardStudio(
-                          context: context,
-                          settings: widget.settings,
-                          noteTitle: _noteTitle,
-                          noteContent: _textController.text,
-                        );
-                      }
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFDC2626),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      _replaceFullText('');
                     },
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.auto_awesome_rounded,
-                            color: theme.primary, size: 18),
-                        const SizedBox(width: 5),
-                        Text(
-                          'بطاقة مصورة',
-                          style: TextStyle(
-                            color: widget.settings.primaryTextColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            )
-          : Row(
-              children: [
-                // زر تحرير الملف
-                Expanded(
-                  flex: 2,
-                  child: RuknSpringButton(
-                    height: 45,
-                    margin: const EdgeInsets.only(bottom: 3),
-                    gradient: LinearGradient(
-                      colors: [theme.primaryDark, theme.primary],
-                    ),
-                    borderColor: theme.accentGold,
-                    onTap: () => _toggleEditReadMode(true),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.edit_rounded, color: Colors.white, size: 19),
-                        SizedBox(width: 8),
-                        Text(
-                          'تحرير الملف',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // زر بطاقة مصورة فاخرة
-                Expanded(
-                  flex: 2,
-                  child: RuknSpringButton(
-                    height: 45,
-                    margin: const EdgeInsets.only(bottom: 3),
-                    backgroundColor: widget.settings.scaffoldBgColor,
-                    borderColor: theme.accentGold,
-                    elevation: 2,
-                    onTap: () {
-                      showRuknShareCardStudio(
-                        context: context,
-                        settings: widget.settings,
-                        noteTitle: _noteTitle,
-                        noteContent: _textController.text,
-                      );
-                    },
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.auto_awesome_rounded,
-                            color: theme.primary, size: 18),
-                        const SizedBox(width: 6),
-                        Text(
-                          'بطاقة مصورة',
-                          style: TextStyle(
-                            color: widget.settings.primaryTextColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // زر مشاركة الملف
-                Expanded(
-                  flex: 2,
-                  child: RuknSpringButton(
-                    height: 45,
-                    margin: const EdgeInsets.only(bottom: 3),
-                    backgroundColor: widget.settings.scaffoldBgColor,
-                    borderColor: theme.primary.withOpacity(0.45),
-                    elevation: 2,
-                    onTap: () {
-                      final note = RuknNoteFile(
-                        filePath:
-                            '${widget.vault.notesDirectoryPath}/$_noteTitle.txt',
-                        title: _noteTitle,
-                        content: _textController.text,
-                        lastModified: DateTime.now(),
-                        isPinned: false,
-                        categoryId: 'all',
-                        isLocked: false,
-                      );
-                      widget.vault.shareNoteFile(note);
-                    },
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.share_rounded,
-                            color: theme.primary, size: 18),
-                        const SizedBox(width: 6),
-                        Text(
-                          'مشاركة الملف',
-                          style: TextStyle(
-                            color: widget.settings.primaryTextColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13.5,
-                          ),
-                        ),
-                      ],
+                    child: Text(
+                      'مسح النص',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // نافذة تخصيص وترتيب أدوات التحرير (مقابض سحب على اليمين وسريعة الاستجابة)
+  // ===========================================================================
+  Future<void> _showCustomizeToolbarDialog() async {
+    List<EditorToolItem> workingOrder = List.from(s.orderedAllTools);
+    Set<String> hiddenSet = workingOrder
+        .where((t) => !s.isToolVisible(t.id))
+        .map((t) => t.id)
+        .toSet();
+
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // الرأس + زر استعادة الافتراضي في الأعلى
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.Handyman_outlined,
+                        color: s.accentColor,
+                        size: 21,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'تخصيص أدوات التحرير',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: s.textMainColor,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          final confirm = await _confirmResetToolbar();
+                          if (confirm) {
+                            await s.resetToolbarToDefault();
+                            setModalState(() {
+                              workingOrder = List.from(s.orderedAllTools);
+                              hiddenSet.clear();
+                            });
+                          }
+                        },
+                        child: Text(
+                          'استعادة الافتراضي',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: s.accentColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'اسحب من مقبض الترتيب على اليمين لتحريك الأداة للأعلى أو الأسفل بسهولة:',
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 12,
+                      color: s.textSubColor,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // القائمة القابلة للسحب مع مقبض فوري الاستجابة على اليمين
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 330),
+                    child: Directionality(
+                      textDirection: TextDirection.rtl,
+                      child: ReorderableListView.builder(
+                        shrinkWrap: true,
+                        buildDefaultDragHandles: false,
+                        itemCount: workingOrder.length,
+                        onReorder: (oldIndex, newIndex) {
+                          RuknHaptics.selection();
+                          setModalState(() {
+                            if (newIndex > oldIndex) newIndex -= 1;
+                            final item = workingOrder.removeAt(oldIndex);
+                            workingOrder.insert(newIndex, item);
+                          });
+                        },
+                        itemBuilder: (context, index) {
+                          final tool = workingOrder[index];
+                          final isVisible = !hiddenSet.contains(tool.id);
+
+                          return Container(
+                            key: ValueKey(tool.id),
+                            margin: const EdgeInsets.only(bottom: 8),
+                            decoration: BoxDecoration(
+                              color: s.bgColor,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: isVisible
+                                    ? s.accentColor.withOpacity(0.45)
+                                    : s.borderColor,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                // مقبض السحب الفوري على اليمين (أول عنصر في صف RTL)
+                                ReorderableDragStartListener(
+                                  index: index,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 13,
+                                    ),
+                                    color: Colors.transparent,
+                                    child: Icon(
+                                      Icons.drag_indicator_rounded,
+                                      color: s.accentColor,
+                                      size: 22,
+                                    ),
+                                  ),
+                                ),
+                                Icon(
+                                  tool.icon,
+                                  size: 19,
+                                  color: isVisible
+                                      ? s.textMainColor
+                                      : s.textSubColor,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: ReorderableDragStartListener(
+                                    index: index,
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 12,
+                                      ),
+                                      child: Text(
+                                        tool.label,
+                                        style: TextStyle(
+                                          fontFamily: s.fontFamily,
+                                          fontSize: 13.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: isVisible
+                                              ? s.textMainColor
+                                              : s.textSubColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                Checkbox(
+                                  value: isVisible,
+                                  activeColor: s.primaryColor,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  onChanged: (val) {
+                                    RuknHaptics.selection();
+                                    setModalState(() {
+                                      if (val == true) {
+                                        hiddenSet.remove(tool.id);
+                                      } else {
+                                        hiddenSet.add(tool.id);
+                                      }
+                                    });
+                                  },
+                                ),
+                                const SizedBox(width: 4),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+                  // أزرار الحفظ والإلغاء فقط في الأسفل
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          child: Text(
+                            'إلغاء',
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              color: s.textSubColor,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 2,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: s.primaryColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () async {
+                            await s.saveToolbarCustomization(
+                              orderedIds:
+                                  workingOrder.map((e) => e.id).toList(),
+                              hiddenIds: hiddenSet,
+                            );
+                            if (ctx.mounted) Navigator.of(ctx).pop();
+                            if (mounted) setState(() {});
+                          },
+                          child: Text(
+                            'حفظ',
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<bool> _confirmResetToolbar() async {
+    bool confirmed = false;
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'استعادة الترتيب الافتراضي؟',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: s.textMainColor,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'سيتم إظهار جميع أدوات التحرير وإعادتها إلى ترتيبها الأصلي.',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 13,
+                color: s.textSubColor,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'تراجع',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: s.primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () {
+                      confirmed = true;
+                      Navigator.of(ctx).pop();
+                    },
+                    child: Text(
+                      'تأكيد',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    return confirmed;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveFontSize = (s.baseFontSize * _zoomFactor).clamp(12.0, 36.0);
+    final stats = SmartArabicEngine.computeStats(_textController.text);
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: s.paperColor,
+        body: Column(
+          children: [
+            // 1. الشريط العلوي المدمج (مع تصغير كبسولة التكبير لإعطاء مساحة للعنوان)
+            _buildTopAppBar(),
+
+            // 2. شريط البحث داخل المذكرة (إن كان مفعلاً)
+            if (_showInNoteSearch) _buildInNoteSearchBar(),
+
+            // 3. شريط أدوات التحرير الذكي (في وضع التحرير)
+            if (_isEditMode) _buildCollapsibleSmartToolbar(),
+
+            // 4. مساحة القراءة / التحرير مع شريط التمرير الأيسر السريع
+            Expanded(
+              child: Stack(
+                children: [
+                  // وضع شريط التمرير على اليسار عبر Directionality.ltr حول RawScrollbar
+                  Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: RawScrollbar(
+                      controller: _isEditMode
+                          ? _editScrollController
+                          : _readScrollController,
+                      thumbVisibility: true,
+                      interactive: true,
+                      thickness: 6,
+                      radius: const Radius.circular(8),
+                      thumbColor: s.accentColor.withOpacity(0.55),
+                      child: Directionality(
+                        textDirection: TextDirection.rtl,
+                        child: _isEditMode
+                            ? _buildEditorView(effectiveFontSize)
+                            : _buildReaderView(effectiveFontSize),
+                      ),
+                    ),
+                  ),
+
+                  // الزر العائم الذكي في أسفل اليسار (أول المستند / آخر المستند)
+                  if (_showJumpButton)
+                    Positioned(
+                      left: 16,
+                      bottom: 14,
+                      child: RuknSpringButton(
+                        onTap: _performQuickJump,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: s.primaryColor.withOpacity(0.92),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: s.accentColor.withOpacity(0.65),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.2),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _jumpToTop
+                                    ? Icons.vertical_align_top_rounded
+                                    : Icons.vertical_align_bottom_rounded,
+                                color: s.accentColor,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                _jumpToTop ? 'أول المستند' : 'آخر المستند',
+                                style: TextStyle(
+                                  fontFamily: s.fontFamily,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            // 5. الشريط السفلي للإحصائيات وحالة الحفظ
+            _buildBottomStatsBar(stats),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopAppBar() {
+    final zoomPct = (_zoomFactor * 100).round();
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [s.primaryColor, s.primaryDarkColor],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: s.primaryDarkColor.withOpacity(0.22),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            children: [
+              // زر رجوع مدمج
+              RuknSpringButton(
+                onTap: () async {
+                  await _flushSaveNow();
+                  if (mounted) Navigator.of(context).pop();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.white.withOpacity(0.18)),
+                  ),
+                  child: const Icon(
+                    Icons.arrow_back_rounded,
+                    color: Colors.white,
+                    size: 18,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // عنوان المذكرة (بمساحة واسعة وواضحة)
+              Expanded(
+                child: Text(
+                  widget.note.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+
+              // كبسولة التكبير والتصغير المدمجة والصغيرة [ + | 100% | - ]
+              Container(
+                height: 30,
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.20),
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(
+                    color: s.accentColor.withOpacity(0.40),
+                    width: 0.9,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      borderRadius: const BorderRadius.horizontal(
+                        right: Radius.circular(8),
+                      ),
+                      onTap: () {
+                        RuknHaptics.selection();
+                        setState(() {
+                          _zoomFactor = (_zoomFactor + 0.1).clamp(0.7, 2.0);
+                        });
+                      },
+                      child: const SizedBox(
+                        width: 24,
+                        height: 30,
+                        child: Icon(
+                          Icons.add_rounded,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        RuknHaptics.light();
+                        setState(() => _zoomFactor = 1.0);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5),
+                        alignment: Alignment.center,
+                        child: Text(
+                          '$zoomPct%',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w800,
+                            color: s.accentColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                    InkWell(
+                      borderRadius: const BorderRadius.horizontal(
+                        left: Radius.circular(8),
+                      ),
+                      onTap: () {
+                        RuknHaptics.selection();
+                        setState(() {
+                          _zoomFactor = (_zoomFactor - 0.1).clamp(0.7, 2.0);
+                        });
+                      },
+                      child: const SizedBox(
+                        width: 24,
+                        height: 30,
+                        child: Icon(
+                          Icons.remove_rounded,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+
+              // زر التبديل بين وضع القراءة والتحرير
+              RuknSpringButton(
+                onTap: _toggleReadEditMode,
+                child: Container(
+                  height: 30,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: _isEditMode
+                        ? s.accentColor
+                        : Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(
+                      color: s.accentColor.withOpacity(0.6),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _isEditMode
+                            ? Icons.visibility_outlined
+                            : Icons.edit_note_rounded,
+                        size: 15,
+                        color:
+                            _isEditMode ? const Color(0xFF111827) : Colors.white,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _isEditMode ? 'قراءة' : 'تحرير',
+                        style: TextStyle(
+                          fontFamily: s.fontFamily,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: _isEditMode
+                              ? const Color(0xFF111827)
+                              : Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInNoteSearchBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: s.cardColor,
+        border: Border(bottom: BorderSide(color: s.borderColor)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              height: 38,
+              decoration: BoxDecoration(
+                color: s.bgColor,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: s.borderColor),
+              ),
+              child: TextField(
+                controller: _inNoteSearchCtrl,
+                autofocus: true,
+                style: TextStyle(
+                  fontFamily: s.fontFamily,
+                  fontSize: 13.5,
+                  color: s.textMainColor,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'ابحث داخل هذه المذكرة...',
+                  hintStyle: TextStyle(
+                    fontFamily: s.fontFamily,
+                    fontSize: 12.5,
+                    color: s.textSubColor,
+                  ),
+                  prefixIcon: Icon(
+                    Icons.search_rounded,
+                    size: 18,
+                    color: s.accentColor,
+                  ),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 9),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _matches.isEmpty
+                ? '0/0'
+                : '${_currentMatchIndex + 1}/${_matches.length}',
+            style: TextStyle(
+              fontFamily: s.fontFamily,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: s.accentColor,
+            ),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              Icons.keyboard_arrow_up_rounded,
+              color: s.textMainColor,
+            ),
+            onPressed: () => _jumpToMatch(-1),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: s.textMainColor,
+            ),
+            onPressed: () => _jumpToMatch(1),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: s.textSubColor,
+            ),
+            onPressed: () {
+              setState(() {
+                _showInNoteSearch = false;
+                _inNoteSearchCtrl.clear();
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollapsibleSmartToolbar() {
+    final visibleTools = s.visibleEditorTools;
+    final iconsOnly = s.toolbarShowIconsOnly;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: s.cardColor,
+        border: Border(bottom: BorderSide(color: s.borderColor)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_isToolbarExpanded)
+            SizedBox(
+              height: 46,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                itemCount: visibleTools.length + 1,
+                separatorBuilder: (_, __) => const SizedBox(width: 6),
+                itemBuilder: (_, idx) {
+                  if (idx == visibleTools.length) {
+                    return GestureDetector(
+                      onTap: _showCustomizeToolbarDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: s.bgColor,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(
+                            color: s.accentColor.withOpacity(0.55),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.tune_rounded,
+                              size: 16,
+                              color: s.accentColor,
+                            ),
+                            if (!iconsOnly) ...[
+                              const SizedBox(width: 5),
+                              Text(
+                                'تخصيص',
+                                style: TextStyle(
+                                  fontFamily: s.fontFamily,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: s.accentColor,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  final tool = visibleTools[idx];
+                  return Tooltip(
+                    message: tool.label,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(9),
+                      onTap: () => _executeEditorTool(tool.id),
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: iconsOnly ? 10 : 11,
+                        ),
+                        decoration: BoxDecoration(
+                          color: s.bgColor,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: s.borderColor),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              tool.icon,
+                              size: 17,
+                              color: s.accentColor,
+                            ),
+                            if (!iconsOnly) ...[
+                              const SizedBox(width: 5),
+                              Text(
+                                tool.label,
+                                style: TextStyle(
+                                  fontFamily: s.fontFamily,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: s.textMainColor,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+
+          // شريط طي / إظهار الأدوات المدمج
+          GestureDetector(
+            onTap: () {
+              RuknHaptics.selection();
+              setState(() => _isToolbarExpanded = !_isToolbarExpanded);
+            },
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              color: s.bgColor.withOpacity(0.5),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _isToolbarExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    size: 15,
+                    color: s.textSubColor,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _isToolbarExpanded ? 'إخفاء الأدوات' : 'إظهار الأدوات',
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: s.textSubColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReaderView(double fontSize) {
+    final content = _textController.text;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onDoubleTap: _toggleReadEditMode,
+      child: SingleChildScrollView(
+        controller: _readScrollController,
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 64),
+        child: SizedBox(
+          width: double.infinity,
+          child: content.trim().isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.only(top: 60),
+                  child: Center(
+                    child: Text(
+                      'المذكرة فارغة — اضغط على زر "تحرير" في الأعلى أو انقر مرتين للكتابة',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontSize: 14,
+                        color: s.textSubColor,
+                      ),
+                    ),
+                  ),
+                )
+              : (_showInNoteSearch && _inNoteQuery.isNotEmpty)
+                  ? SelectableText.rich(
+                      SmartArabicEngine.buildHighlightedTextSpan(
+                        text: content,
+                        query: _inNoteQuery,
+                        baseStyle: TextStyle(
+                          fontFamily: s.fontFamily,
+                          fontSize: fontSize,
+                          height: 1.75,
+                          color: s.textMainColor,
+                        ),
+                      ),
+                    )
+                  : SelectableText(
+                      content,
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontSize: fontSize,
+                        height: 1.75,
+                        color: s.textMainColor,
+                      ),
+                    ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEditorView(double fontSize) {
+    return SingleChildScrollView(
+      controller: _editScrollController,
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 80),
+      child: TextField(
+        controller: _textController,
+        focusNode: _editorFocusNode,
+        maxLines: null,
+        keyboardType: TextInputType.multiline,
+        style: TextStyle(
+          fontFamily: s.fontFamily,
+          fontSize: fontSize,
+          height: 1.75,
+          color: s.textMainColor,
+        ),
+        decoration: InputDecoration(
+          hintText: 'ابدأ الكتابة في رُكْنك الخاص...',
+          hintStyle: TextStyle(
+            fontFamily: s.fontFamily,
+            fontSize: fontSize,
+            color: s.textSubColor.withOpacity(0.55),
+          ),
+          border: InputBorder.none,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomStatsBar(DocumentStats stats) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: s.cardColor,
+        border: Border(top: BorderSide(color: s.borderColor)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            Text(
+              '${stats.words} كلمة  •  ${stats.characters} حرف  •  ${stats.lines} سطر',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: s.textSubColor,
+              ),
+            ),
+            const Spacer(),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _isSaving
+                      ? Icons.sync_rounded
+                      : Icons.check_circle_outline_rounded,
+                  size: 14,
+                  color: _isSaving ? s.accentColor : const Color(0xFF16A34A),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _isSaving ? 'جارٍ الحفظ...' : 'محفوظ تلقائياً',
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: s.textSubColor,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
