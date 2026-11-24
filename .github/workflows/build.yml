@@ -1,8 +1,6 @@
 name: Build Rukn Luxury App APK
 
 on:
-  push:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -26,27 +24,101 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Organize Dart Files & Clean Markdown Backticks
+      - name: Locate Dart Files & Generate pubspec.yaml Automatically
         run: |
-          mkdir -p lib
+          mkdir -p lib_collected
           for f in main.dart gulf_themes.dart luxury_ui.dart storage_vault.dart smart_arabic_engine.dart share_card_studio.dart home_screen.dart editor_screen.dart settings_screen.dart; do
-            if [ -f "$f" ]; then
-              cp "$f" "lib/$f"
+            found_file=$(find . -maxdepth 3 -name "$f" | head -n 1)
+            if [ -n "$found_file" ]; then
+              cp "$found_file" "lib_collected/$f"
+            else
+              echo "ERROR: Missing Dart file: $f"
+              exit 1
             fi
           done
-          find lib -name "*.dart" -type f -exec sed -i '/^\x60/d' {} +
-          if [ -f "pubspec.yaml" ]; then
-            sed -i '/^\x60/d' pubspec.yaml
-          fi
+
+          # تنظيف أي علامات اقتباس وتصحيح أي كود لون تلقائياً
+          find lib_collected -name "*.dart" -type f -exec sed -i '/^\x60/d' {} +
+          find lib_collected -name "*.dart" -type f -exec sed -i 's/0xGGG/0xFFF/g' {} +
+
+          # إنشاء ملف pubspec.yaml نظيف ومضمون 100%
+          cat << 'EOF' > pubspec_clean.yaml
+          name: rukn_app
+          description: "رُكْن — مساحتك الخاصة لتدوين الفكر وتنظيم اليوم بهوية خليجية فاخرة"
+          publish_to: 'none'
+          version: 1.0.0+100
+
+          environment:
+            sdk: '>=3.2.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            flutter_localizations:
+              sdk: flutter
+            shared_preferences: ^2.2.2
+            path_provider: ^2.1.2
+            share_plus: ^7.2.2
+            archive: ^3.4.10
+            intl: any
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+
+          flutter:
+            uses-material-design: true
+
+            assets:
+              - assets/fonts/
+
+            fonts:
+              - family: Tajawal
+                fonts:
+                  - asset: assets/fonts/tajawal_regular.ttf
+                  - asset: assets/fonts/tajawal_bold.ttf
+                    weight: 700
+              - family: Almarai
+                fonts:
+                  - asset: assets/fonts/almarai_regular.ttf
+                  - asset: assets/fonts/almarai_bold.ttf
+                    weight: 700
+              - family: ScheherazadeNew
+                fonts:
+                  - asset: assets/fonts/scheherazade_regular.ttf
+                  - asset: assets/fonts/scheherazade_bold.ttf
+                    weight: 700
+              - family: ReadexPro
+                fonts:
+                  - asset: assets/fonts/readex_pro.ttf
+              - family: NotoSansArabic
+                fonts:
+                  - asset: assets/fonts/noto_sans_arabic.ttf
+              - family: NotoNaskhArabic
+                fonts:
+                  - asset: assets/fonts/noto_naskh_arabic.ttf
+              - family: IBMPlexSansArabic
+                fonts:
+                  - asset: assets/fonts/ibm_plex_arabic.ttf
+                  - asset: assets/fonts/ibm_plex_arabic_bold.ttf
+                    weight: 700
+              - family: ArefRuqaa
+                fonts:
+                  - asset: assets/fonts/aref_ruqaa.ttf
+                  - asset: assets/fonts/aref_ruqaa_bold.ttf
+                    weight: 700
+              - family: ReemKufi
+                fonts:
+                  - asset: assets/fonts/reem_kufi.ttf
+          EOF
 
       - name: Generate Android Platform Scaffolding
         run: |
-          cp pubspec.yaml pubspec.yaml.bak
-          cp -r lib lib_bak
           flutter create --org com.rukn --project-name rukn_app --platforms=android .
-          cp pubspec.yaml.bak pubspec.yaml
-          cp -r lib_bak/* lib/
-          rm -rf pubspec.yaml.bak lib_bak
+          cp pubspec_clean.yaml pubspec.yaml
+          mkdir -p lib
+          cp -r lib_collected/* lib/
+          rm -rf lib_collected pubspec_clean.yaml
 
       - name: Download & Prepare 10 Luxury Arabic Fonts
         run: |
@@ -72,7 +144,8 @@ jobs:
           download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Bold.ttf" "ibm_plex_arabic_bold.ttf"
           download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Regular.ttf" "aref_ruqaa.ttf"
           download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Bold.ttf" "aref_ruqaa_bold.ttf"
-          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/reemkufi/ReemKufi%5Bwght%5D.ttf" "reem_kufi.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/reemkufi/ReemKufi%5Bwght%5D.ttf" "reemkufi.ttf"
+          cp assets/fonts/reemkufi.ttf assets/fonts/reem_kufi.ttf || true
 
       - name: Restore or Generate Fixed Signing Keystore for Rukn
         uses: actions/cache@v4
