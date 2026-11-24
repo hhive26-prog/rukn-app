@@ -1,649 +1,1211 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart' hide TextDirection;
+import 'package:share_plus/share_plus.dart';
+
 import 'gulf_themes.dart';
 import 'luxury_ui.dart';
-import 'storage_vault.dart';
 import 'smart_arabic_engine.dart';
-import 'share_card_studio.dart';
+import 'storage_vault.dart';
 import 'editor_screen.dart';
 import 'settings_screen.dart';
+import 'share_card_studio.dart';
 
-class RuknHomeScreen extends StatefulWidget {
+class HomeScreen extends StatefulWidget {
   final AppSettingsController settings;
   final StorageVaultController vault;
 
-  const RuknHomeScreen({
+  const HomeScreen({
     super.key,
     required this.settings,
     required this.vault,
   });
 
   @override
-  State<RuknHomeScreen> createState() => _RuknHomeScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _RuknHomeScreenState extends State<RuknHomeScreen> {
-  final ScrollController _homeScrollController = ScrollController();
+class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
-
-  double _savedHomeScrollY = 0.0;
   String _searchQuery = '';
-  String _selectedCategoryId = 'all';
-  bool _isCreatingZip = false;
+  String _selectedCategory = 'الكل';
+  bool _isExportingZip = false;
+
+  AppSettingsController get s => widget.settings;
+  StorageVaultController get v => widget.vault;
 
   @override
   void initState() {
     super.initState();
-    _homeScrollController.addListener(() {
-      if (_homeScrollController.hasClients) {
-        _savedHomeScrollY = _homeScrollController.offset;
+    _searchController.addListener(() {
+      if (_searchQuery != _searchController.text) {
+        setState(() {
+          _searchQuery = _searchController.text.trim();
+        });
       }
     });
   }
 
   @override
   void dispose() {
-    _homeScrollController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  /// استعادة موضع التمرير في القائمة الرئيسية بعد الرجوع من المستند أو الإعدادات
-  void _restoreHomeScrollPosition() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_homeScrollController.hasClients) {
-        final maxScroll = _homeScrollController.position.maxScrollExtent;
-        final target = _savedHomeScrollY.clamp(0.0, maxScroll);
-        _homeScrollController.jumpTo(target);
-      }
-    });
-  }
-
-  /// تصفية الملاحظات حسب التصنيف المختار والبحث العربي الذكي
   List<RuknNoteFile> _getFilteredNotes() {
-    final all = widget.vault.notes;
-    final q = _searchQuery.trim();
-
+    final all = v.notes;
     return all.where((note) {
-      // تصفية حسب التصنيف
-      if (_selectedCategoryId == 'pinned') {
+      if (_selectedCategory == 'المثبتة') {
         if (!note.isPinned) return false;
-      } else if (_selectedCategoryId != 'all') {
-        if (note.categoryId != _selectedCategoryId) return false;
+      } else if (_selectedCategory != 'الكل') {
+        if (note.category != _selectedCategory) return false;
       }
 
-      // تصفية حسب محرك البحث العربي الذكي (في العنوان أو المحتوى)
-      if (q.isEmpty) return true;
-      final matchInTitle = SmartArabicEngine.smartContains(note.title, q);
-      final matchInContent = SmartArabicEngine.smartContains(note.content, q);
-      return matchInTitle || matchInContent;
+      if (_searchQuery.isEmpty) return true;
+
+      if (note.isLocked) {
+        return SmartArabicEngine.containsSmartMatch(note.title, _searchQuery);
+      }
+
+      final matchTitle =
+          SmartArabicEngine.containsSmartMatch(note.title, _searchQuery);
+      final matchContent =
+          SmartArabicEngine.containsSmartMatch(note.content, _searchQuery);
+      return matchTitle || matchContent;
     }).toList();
   }
 
-  /// فتح نافذة إنشاء ملف جديد
-  Future<void> _showCreateNewNoteDialog() async {
-    final titleCtrl = TextEditingController();
-    String chosenCategory =
-        (_selectedCategoryId == 'all' || _selectedCategoryId == 'pinned')
-            ? 'all'
-            : _selectedCategoryId;
+  Future<bool> _verifyPinIfLocked(RuknNoteFile note) async {
+    if (!note.isLocked) return true;
 
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'إنشاء ملف جديد في رُكْن',
-      subtitle: 'اختر عنواناً للملاحظة والتصنيف المناسب لها',
-      headerIcon: Icons.note_add_rounded,
-      content: StatefulBuilder(
-        builder: (ctx, setModalState) {
-          final theme = widget.settings.activeTheme;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: titleCtrl,
-                autofocus: true,
-                textDirection: TextDirection.rtl,
-                style: TextStyle(
-                  color: widget.settings.primaryTextColor,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'اكتب اسم الملف هنا (مثال: أفكار ومشاريع)...',
-                  hintStyle: TextStyle(
-                    color: widget.settings.secondaryTextColor,
-                    fontSize: 14,
-                  ),
-                  filled: true,
-                  fillColor: widget.settings.scaffoldBgColor,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(color: widget.settings.borderColor),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(color: theme.primary, width: 1.5),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                'تصنيف الملاحظة:',
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.bold,
-                  color: widget.settings.secondaryTextColor,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: RuknCategory.allCategories
-                    .where((c) => c.id != 'pinned')
-                    .map((cat) {
-                  final selected = chosenCategory == cat.id;
-                  return GestureDetector(
-                    onTap: () {
-                      RuknHaptics.selectionClick();
-                      setModalState(() => chosenCategory = cat.id);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: selected
-                            ? theme.primary
-                            : widget.settings.scaffoldBgColor,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: selected
-                              ? theme.accentGold
-                              : widget.settings.borderColor,
-                        ),
-                      ),
-                      child: Text(
-                        '${cat.emoji} ${cat.title}',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.bold,
-                          color: selected
-                              ? Colors.white
-                              : widget.settings.primaryTextColor,
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
-          );
-        },
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            gradient: LinearGradient(
-              colors: [
-                widget.settings.activeTheme.primaryDark,
-                widget.settings.activeTheme.primary,
-              ],
-            ),
-            borderColor: widget.settings.activeTheme.accentGold,
-            onTap: () async {
-              final rawName = titleCtrl.text.trim().isEmpty
-                  ? 'ملاحظة جديدة'
-                  : titleCtrl.text.trim();
-              Navigator.of(context).pop();
-              final created = await widget.vault.createNewNote(
-                title: rawName,
-                categoryId: chosenCategory,
-              );
-              if (mounted) {
-                _openNoteDocument(created, startInEditMode: true);
-              }
+    if (!s.hasPin) {
+      final created = await _showCreatePinModal();
+      return created;
+    }
+
+    bool unlocked = false;
+    await Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        pageBuilder: (ctx, anim, secAnim) => FadeTransition(
+          opacity: anim,
+          child: RuknPinLockScreen(
+            settings: s,
+            title: 'مذكرة مقفلة',
+            subtitle: 'أدخل رمز الحماية لفتح "${note.title}"',
+            onUnlocked: () {
+              unlocked = true;
+              Navigator.of(ctx).pop();
             },
-            child: const Text(
-              'إنشاء وفتح المحرر',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14.5,
-              ),
-            ),
+            onCancel: () {
+              unlocked = false;
+              Navigator.of(ctx).pop();
+            },
           ),
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 14.5,
-              ),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
+    return unlocked;
   }
 
-  /// فتح المستند (مع التحقق من رمز الحماية إذا كانت الملاحظة مقفلة/خاصة)
-  Future<void> _openNoteDocument(
+  Future<bool> _showCreatePinModal() async {
+    final pinCtrl = TextEditingController();
+    bool saved = false;
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.lock_outline_rounded, color: s.accentColor, size: 22),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'إعداد رمز الحماية (PIN)',
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                      color: s.textMainColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'أدخل رمزاً مكوناً من 4 أرقام لقفل المذكرات الخاصة بك:',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 13.5,
+                color: s.textSubColor,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: pinCtrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 4,
+              obscureText: true,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 12,
+                color: s.textMainColor,
+              ),
+              decoration: InputDecoration(
+                counterText: '',
+                hintText: '••••',
+                filled: true,
+                fillColor: s.bgColor,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(color: s.borderColor),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'إلغاء',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: s.primaryColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () async {
+                      final pin = pinCtrl.text.trim();
+                      if (pin.length == 4 && int.tryParse(pin) != null) {
+                        await s.setPinCode(pin);
+                        saved = true;
+                        if (ctx.mounted) Navigator.of(ctx).pop();
+                      } else {
+                        showRuknToast(
+                          context,
+                          s,
+                          'يرجى إدخال 4 أرقام صحيحة',
+                          isError: true,
+                        );
+                      }
+                    },
+                    child: Text(
+                      'حفظ الرمز',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    return saved;
+  }
+
+  Future<void> _openNote(
     RuknNoteFile note, {
     bool startInEditMode = false,
   }) async {
-    if (note.isLocked && widget.settings.pinCode.isNotEmpty) {
-      final unlocked = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (ctx) => RuknPinLockScreen(
-            settings: widget.settings,
-            title: 'ملاحظة خاصة مقفلة 🔒',
-            subtitle: 'أدخل رمز الحماية لفتح "${note.title}"',
-            onUnlocked: () => Navigator.of(ctx).pop(true),
-            onCancel: () => Navigator.of(ctx).pop(false),
-          ),
-        ),
-      );
-      if (unlocked != true) return;
-    }
+    final canOpen = await _verifyPinIfLocked(note);
+    if (!canOpen || !mounted) return;
 
-    if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (ctx) => RuknEditorScreen(
-          settings: widget.settings,
-          vault: widget.vault,
-          initialNote: note,
-          initialSearchQuery: _searchQuery,
-          startInEditMode: startInEditMode,
+        builder: (_) => EditorScreen(
+          settings: s,
+          vault: v,
+          note: note,
+          initialEditMode: startInEditMode,
+          initialSearchQuery: _searchQuery.isNotEmpty ? _searchQuery : null,
         ),
       ),
     );
-    await widget.vault.reloadNotes();
-    _restoreHomeScrollPosition();
   }
 
-  /// فتح شاشة الإعدادات مع استعادة موضع التمرير عند العودة
-  Future<void> _openSettingsScreen() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (ctx) => RuknSettingsScreen(
-          settings: widget.settings,
-          vault: widget.vault,
-        ),
-      ),
-    );
-    _restoreHomeScrollPosition();
-  }
-
-  /// نافذة تعديل الهوية الشخصية السريعة عند لمس عنوان البطاقة الملكية
-  Future<void> _showQuickPersonalizeDialog() async {
-    String selectedPrefix = widget.settings.personalPrefix;
-    final nameCtrl = TextEditingController(text: widget.settings.userName);
-    final subCtrl = TextEditingController(text: widget.settings.customSubtitle);
-    const prefixes = ['رُكْن', 'مِساحة', 'دِيوان', 'خَلوة', 'مفكرة'];
+  Future<void> _showCreateNoteDialog() async {
+    final titleCtrl = TextEditingController();
+    String chosenCategory =
+        (_selectedCategory != 'الكل' && _selectedCategory != 'المثبتة')
+            ? _selectedCategory
+            : '';
 
     await showRuknModalDialog(
       context: context,
-      settings: widget.settings,
-      title: 'تخصيص هويتك الشخصية',
-      subtitle: 'اجعل البطاقة الملكية العلوية تحمل اسمك أو كنيتك',
-      headerIcon: Icons.workspace_premium_rounded,
-      content: StatefulBuilder(
-        builder: (ctx, setModalState) {
-          final theme = widget.settings.activeTheme;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'اختر اللقب الافتتاحي:',
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.bold,
-                  color: widget.settings.secondaryTextColor,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: prefixes.map((p) {
-                  final active = selectedPrefix == p;
-                  return GestureDetector(
-                    onTap: () {
-                      RuknHaptics.selectionClick();
-                      setModalState(() => selectedPrefix = p);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: active
-                            ? theme.primary
-                            : widget.settings.scaffoldBgColor,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: active
-                              ? theme.accentGold
-                              : widget.settings.borderColor,
+      settings: s,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: s.primaryColor.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.note_add_outlined,
+                          color: s.accentColor,
+                          size: 20,
                         ),
                       ),
-                      child: Text(
-                        p,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: active
-                              ? Colors.white
-                              : widget.settings.primaryTextColor,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'مذكرة نصية جديدة',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: s.textMainColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: titleCtrl,
+                    autofocus: true,
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 15,
+                      color: s.textMainColor,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    decoration: InputDecoration(
+                      labelText: 'عنوان المذكرة',
+                      hintText: 'مثال: أفكار وملاحظات اليوم...',
+                      labelStyle: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                      ),
+                      filled: true,
+                      fillColor: s.bgColor,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(color: s.borderColor),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide:
+                            BorderSide(color: s.accentColor, width: 1.5),
+                      ),
+                    ),
+                  ),
+                  if (s.customCategories.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'المجلد (اختياري):',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: s.textSubColor,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _buildCategoryChoiceChip(
+                          label: 'بدون مجلد',
+                          selected: chosenCategory.isEmpty,
+                          onTap: () =>
+                              setModalState(() => chosenCategory = ''),
+                        ),
+                        ...s.customCategories.map(
+                          (cat) => _buildCategoryChoiceChip(
+                            label: cat,
+                            selected: chosenCategory == cat,
+                            onTap: () =>
+                                setModalState(() => chosenCategory = cat),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          child: Text(
+                            'إلغاء',
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              color: s.textSubColor,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 2,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: s.primaryColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          icon: const Icon(Icons.check_rounded, size: 18),
+                          label: Text(
+                            'إنشاء وفتح',
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14.5,
+                            ),
+                          ),
+                          onPressed: () async {
+                            final rawTitle = titleCtrl.text.trim().isEmpty
+                                ? 'مذكرة ${DateFormat('yyyy-MM-dd').format(DateTime.now())}'
+                                : titleCtrl.text.trim();
+                            Navigator.of(ctx).pop();
+                            final created = await v.createNewNote(
+                              title: rawTitle,
+                              category: chosenCategory,
+                            );
+                            if (mounted) {
+                              await _openNote(
+                                created,
+                                startInEditMode: true,
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildCategoryChoiceChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: () {
+        RuknHaptics.selection();
+        onTap();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected ? s.primaryColor : s.bgColor,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: selected ? s.accentColor : s.borderColor,
+            width: selected ? 1.3 : 1.0,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontFamily: s.fontFamily,
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+            color: selected ? Colors.white : s.textMainColor,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // نافذة إدارة وتعديل المجلدات (إضافة / إعادة تسمية / حذف)
+  // ===========================================================================
+  Future<void> _showManageFoldersModal() async {
+    final newFolderCtrl = TextEditingController();
+
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            final folders = s.customCategories;
+            return Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.folder_open_rounded,
+                        color: s.accentColor,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'إدارة وتعديل المجلدات',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 16.5,
+                            fontWeight: FontWeight.w800,
+                            color: s.textMainColor,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          await s.resetCategoriesToDefault();
+                          setModalState(() {});
+                          if (mounted) setState(() {});
+                        },
+                        child: Text(
+                          'استعادة الافتراضي',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: s.accentColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // حقل إضافة مجلد جديد
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: newFolderCtrl,
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 14,
+                            color: s.textMainColor,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: 'اسم مجلد جديد...',
+                            hintStyle: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontSize: 13,
+                              color: s.textSubColor,
+                            ),
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 11,
+                            ),
+                            filled: true,
+                            fillColor: s.bgColor,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(color: s.borderColor),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: s.primaryColor,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 11,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        onPressed: () async {
+                          final name = newFolderCtrl.text.trim();
+                          if (name.isEmpty) return;
+                          await s.addCustomCategory(name);
+                          newFolderCtrl.clear();
+                          setModalState(() {});
+                          if (mounted) setState(() {});
+                        },
+                        child: Text(
+                          'إضافة',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 260),
+                    child: folders.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 24),
+                            child: Center(
+                              child: Text(
+                                'لا توجد مجلدات مخصصة حالياً',
+                                style: TextStyle(
+                                  fontFamily: s.fontFamily,
+                                  fontSize: 13,
+                                  color: s.textSubColor,
+                                ),
+                              ),
+                            ),
+                          )
+                        : ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: folders.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (_, idx) {
+                              final folderName = folders[idx];
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: s.bgColor,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: s.borderColor),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        folderName,
+                                        style: TextStyle(
+                                          fontFamily: s.fontFamily,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: s.textMainColor,
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      tooltip: 'إعادة تسمية',
+                                      icon: Icon(
+                                        Icons.edit_outlined,
+                                        size: 19,
+                                        color: s.accentColor,
+                                      ),
+                                      onPressed: () async {
+                                        await _showRenameFolderDialog(
+                                          folderName,
+                                        );
+                                        setModalState(() {});
+                                        if (mounted) setState(() {});
+                                      },
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      tooltip: 'حذف المجلد',
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        size: 19,
+                                        color: Color(0xFFDC2626),
+                                      ),
+                                      onPressed: () async {
+                                        await s.deleteCustomCategory(
+                                          folderName,
+                                        );
+                                        await v.renameCategoryAcrossNotes(
+                                          folderName,
+                                          '',
+                                        );
+                                        if (_selectedCategory == folderName) {
+                                          _selectedCategory = 'الكل';
+                                        }
+                                        setModalState(() {});
+                                        if (mounted) setState(() {});
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  const SizedBox(height: 14),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: s.primaryColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'إغلاق',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showRenameFolderDialog(String oldName) async {
+    final ctrl = TextEditingController(text: oldName);
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'إعادة تسمية المجلد',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: s.textMainColor,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 14.5,
+                color: s.textMainColor,
+                fontWeight: FontWeight.w700,
+              ),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: s.bgColor,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: s.borderColor),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'إلغاء',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: s.primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () async {
+                      final newName = ctrl.text.trim();
+                      if (newName.isNotEmpty && newName != oldName) {
+                        await s.renameCustomCategory(oldName, newName);
+                        await v.renameCategoryAcrossNotes(oldName, newName);
+                        if (_selectedCategory == oldName) {
+                          _selectedCategory = newName;
+                        }
+                      }
+                      if (ctx.mounted) Navigator.of(ctx).pop();
+                    },
+                    child: Text(
+                      'حفظ',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // تعديل الترويسة الشخصية (رُكْن فقط + الاسم والترحيب)
+  // ===========================================================================
+  Future<void> _showPersonalHeaderModal() async {
+    final nameCtrl = TextEditingController(text: s.userName);
+    final subCtrl = TextEditingController(text: s.headerSubtitle);
+    final sigCtrl = TextEditingController(text: s.signatureText);
+
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.all(22),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.badge_outlined,
+                      color: s.accentColor,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'تخصيص ترويسة رُكْن',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                        color: s.textMainColor,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameCtrl,
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    color: s.textMainColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'الاسم أو اللقب بجانب رُكْن (اتركه فارغاً لـ "رُكْن خاص")',
+                    hintText: 'مثال: أبو فهد / سارة',
+                    filled: true,
+                    fillColor: s.bgColor,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: subCtrl,
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    color: s.textMainColor,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'عبارة الترحيب أسفل العنوان',
+                    filled: true,
+                    fillColor: s.bgColor,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: sigCtrl,
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    color: s.textMainColor,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'التوقيع الشخصي على بطاقات المشاركة',
+                    hintText: 'مثال: من رُكْن أبو فهد',
+                    filled: true,
+                    fillColor: s.bgColor,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: Text(
+                          'إلغاء',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            color: s.textSubColor,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: nameCtrl,
-                textDirection: TextDirection.rtl,
-                style: TextStyle(color: widget.settings.primaryTextColor),
-                decoration: InputDecoration(
-                  labelText: 'اسمك أو كنيتك (مثال: أبو فهد / عبد العزيز / نورة)',
-                  filled: true,
-                  fillColor: widget.settings.scaffoldBgColor,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 2,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: s.primaryColor,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        onPressed: () async {
+                          await s.setUserName(nameCtrl.text);
+                          await s.setHeaderSubtitle(
+                            subCtrl.text.trim().isEmpty
+                                ? 'مساحتك الخاصة للكتابة والتنظيم'
+                                : subCtrl.text.trim(),
+                          );
+                          await s.setSignatureText(sigCtrl.text);
+                          if (ctx.mounted) Navigator.of(ctx).pop();
+                        },
+                        child: Text(
+                          'حفظ التخصيص',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: subCtrl,
-                textDirection: TextDirection.rtl,
-                style: TextStyle(color: widget.settings.primaryTextColor),
-                decoration: InputDecoration(
-                  labelText: 'العبارة الفرعية تحت الاسم',
-                  filled: true,
-                  fillColor: widget.settings.scaffoldBgColor,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            gradient: LinearGradient(
-              colors: [
-                widget.settings.activeTheme.primaryDark,
-                widget.settings.activeTheme.primary,
               ],
             ),
-            borderColor: widget.settings.activeTheme.accentGold,
-            onTap: () async {
-              await widget.settings.updatePersonalIdentity(
-                prefix: selectedPrefix,
-                userName: nameCtrl.text,
-                subtitle: subCtrl.text,
-              );
-              if (mounted) {
-                Navigator.of(context).pop();
-                showRuknToast(context, 'تم تحديث هويتك الشخصية بنجاح');
-              }
-            },
-            child: const Text(
-              'حفظ الهوية',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
           ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
+        );
+      },
     );
   }
 
-  /// قائمة الثلاث نقاط (⋮) الفاخرة بالخيارات الـ 7 المعتمدة + المشاركة المصورة
+  // ===========================================================================
+  // قائمة خيارات الملف (⋮) - بدون أي إيموجيات ملونة (أيقونات موحدة فاخرة فقط)
+  // ===========================================================================
   Future<void> _showFileOptionsMenu(RuknNoteFile note) async {
-    // إذا كانت الملاحظة مقفلة برمز سري نتحقق منه قبل عرض خيارات التعديل/الحذف
-    if (note.isLocked && widget.settings.pinCode.isNotEmpty) {
-      final unlocked = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (ctx) => RuknPinLockScreen(
-            settings: widget.settings,
-            title: 'خيارات ملف خاص 🔒',
-            subtitle: 'أدخل رمز الحماية لإدارة "${note.title}"',
-            onUnlocked: () => Navigator.of(ctx).pop(true),
-            onCancel: () => Navigator.of(ctx).pop(false),
-          ),
-        ),
-      );
-      if (unlocked != true || !mounted) return;
-    }
-
-    final theme = widget.settings.activeTheme;
-
     await showRuknModalDialog(
       context: context,
-      settings: widget.settings,
-      title: note.title,
-      subtitle: 'إدارة الملف والخزنة الآمنة والمشاركة',
-      headerIcon: Icons.description_rounded,
-      content: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 1. تثبيت الملف / إلغاء تثبيت الملف
-          _buildOptionTile(
-            icon: note.isPinned
-                ? Icons.push_pin_outlined
-                : Icons.push_pin_rounded,
-            title: note.isPinned ? 'إلغاء تثبيت الملف' : 'تثبيت الملف',
-            color: theme.primary,
-            onTap: () async {
-              Navigator.of(context).pop();
-              final pinned = await widget.vault.togglePin(note.title);
-              if (mounted) {
-                showRuknToast(
-                  context,
-                  pinned ? 'تم تثبيت الملف في الأعلى 📌' : 'تم إلغاء تثبيت الملف',
-                );
-              }
-            },
-          ),
-          // 2. إعادة تسمية الملف
-          _buildOptionTile(
-            icon: Icons.drive_file_rename_outline_rounded,
-            title: 'إعادة تسمية الملف',
-            color: theme.primary,
-            onTap: () {
-              Navigator.of(context).pop();
-              _showRenameNoteDialog(note);
-            },
-          ),
-          // 3. إنشاء نسخة مكررة من الملف
-          _buildOptionTile(
-            icon: Icons.copy_all_rounded,
-            title: 'إنشاء نسخة مكررة من الملف',
-            color: theme.primary,
-            onTap: () async {
-              Navigator.of(context).pop();
-              final copy = await widget.vault.duplicateNote(note);
-              if (mounted) {
-                showRuknToast(
-                  context,
-                  'تم إنشاء نسخة مكررة: ${copy.title}',
-                );
-              }
-            },
-          ),
-          // 4. إنشاء نسخة آمنة
-          _buildOptionTile(
-            icon: Icons.shield_rounded,
-            title: 'إنشاء نسخة آمنة',
-            color: theme.primary,
-            onTap: () async {
-              Navigator.of(context).pop();
-              await widget.vault.createSafeBackup(note.title);
-              if (mounted) {
-                showRuknToast(
-                  context,
-                  'تم حفظ نسخة آمنة في (خزنة_النسخ_الآمنة) 🛡️',
-                  icon: Icons.verified_user_rounded,
-                );
-              }
-            },
-          ),
-          // 5. تصفح النسخ الآمنة
-          _buildOptionTile(
-            icon: Icons.history_edu_rounded,
-            title: 'تصفح النسخ الآمنة',
-            color: theme.primary,
-            onTap: () {
-              Navigator.of(context).pop();
-              _showSafeBackupsBrowserDialog(note);
-            },
-          ),
-          // 6. مشاركة الملف (+ خيار البطاقة المصورة الفاخرة)
-          _buildOptionTile(
-            icon: Icons.share_rounded,
-            title: 'مشاركة الملف',
-            color: theme.primary,
-            onTap: () {
-              Navigator.of(context).pop();
-              _showShareChoiceDialog(note);
-            },
-          ),
-          // خيار إضافي سريع لتغيير التصنيف أو القفل الخاص
-          _buildOptionTile(
-            icon: note.isLocked ? Icons.lock_open_rounded : Icons.lock_outline_rounded,
-            title: note.isLocked
-                ? 'إلغاء القفل الخاص عن الملف'
-                : 'قفل الملف كملاحظة خاصة 🔒',
-            color: theme.primary,
-            onTap: () async {
-              Navigator.of(context).pop();
-              final locked = await widget.vault.toggleNoteLock(note.title);
-              if (mounted) {
-                showRuknToast(
-                  context,
-                  locked
-                      ? 'تم وضع الملف تحت الحماية الخاصة 🔒'
-                      : 'تم فتح حماية الملف',
-                );
-              }
-            },
-          ),
-          // 7. حذف الملف (باللون الأحمر الصريح #DC2626 دائماً)
-          _buildOptionTile(
-            icon: Icons.delete_forever_rounded,
-            title: 'حذف الملف',
-            color: const Color(0xFFDC2626),
-            isDanger: true,
-            onTap: () {
-              Navigator.of(context).pop();
-              _showDeleteConfirmDialog(note);
-            },
-          ),
-        ],
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 44,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إغلاق',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
+      settings: s,
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: s.primaryColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        note.isLocked
+                            ? Icons.lock_rounded
+                            : Icons.description_outlined,
+                        color: s.accentColor,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            note.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontSize: 15.5,
+                              fontWeight: FontWeight.w800,
+                              color: s.textMainColor,
+                            ),
+                          ),
+                          Text(
+                            note.category.isNotEmpty
+                                ? 'المجلد: ${note.category}'
+                                : 'ملف نصي قياسي',
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontSize: 11.5,
+                              color: s.textSubColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Divider(color: s.borderColor, height: 1),
+                const SizedBox(height: 6),
+
+                // 1. تثبيت / إلغاء تثبيت
+                _buildOptionTile(
+                  icon: note.isPinned
+                      ? Icons.push_pin_outlined
+                      : Icons.push_pin_rounded,
+                  title: note.isPinned
+                      ? 'إلغاء تثبيت الملف من الأعلى'
+                      : 'تثبيت الملف في الأعلى',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    await v.togglePinNote(note);
+                    if (mounted) {
+                      showRuknToast(
+                        context,
+                        s,
+                        note.isPinned
+                            ? 'تم إلغاء التثبيت'
+                            : 'تم تثبيت الملف في الأعلى',
+                      );
+                    }
+                  },
+                ),
+
+                // 2. نقل إلى مجلد
+                _buildOptionTile(
+                  icon: Icons.folder_outlined,
+                  title: 'نقل إلى مجلد',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    await _showCategoryAssignDialog(note);
+                  },
+                ),
+
+                // 3. قفل / إلغاء قفل الخصوصية
+                _buildOptionTile(
+                  icon: note.isLocked
+                      ? Icons.lock_open_rounded
+                      : Icons.lock_outline_rounded,
+                  title: note.isLocked
+                      ? 'إلغاء قفل الخصوصية عن الملف'
+                      : 'قفل الملف برمز الحماية (PIN)',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    if (!note.isLocked && !s.hasPin) {
+                      final created = await _showCreatePinModal();
+                      if (!created) return;
+                    }
+                    await v.toggleLockNote(note);
+                    if (mounted) {
+                      showRuknToast(
+                        context,
+                        s,
+                        note.isLocked
+                            ? 'تم إلغاء القفل عن الملف'
+                            : 'تم قفل الملف برمز الحماية',
+                      );
+                    }
+                  },
+                ),
+
+                // 4. إعادة تسمية الملف
+                _buildOptionTile(
+                  icon: Icons.drive_file_rename_outline_rounded,
+                  title: 'إعادة تسمية الملف',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    await _showRenameDialog(note);
+                  },
+                ),
+
+                // 5. إنشاء نسخة مكررة
+                _buildOptionTile(
+                  icon: Icons.copy_all_rounded,
+                  title: 'إنشاء نسخة مكررة',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    await v.duplicateNote(note);
+                    if (mounted) {
+                      showRuknToast(
+                        context,
+                        s,
+                        'تم إنشاء نسخة مكررة من الملف',
+                      );
+                    }
+                  },
+                ),
+
+                // 6. إنشاء نسخة آمنة فورية
+                _buildOptionTile(
+                  icon: Icons.shield_outlined,
+                  title: 'إنشاء نسخة آمنة فورية',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    await v.createSafeBackup(note);
+                    if (mounted) {
+                      showRuknToast(
+                        context,
+                        s,
+                        'تم حفظ نسخة آمنة في الخزنة الداخلية',
+                      );
+                    }
+                  },
+                ),
+
+                // 7. تصفح واسترجاع النسخ الآمنة
+                _buildOptionTile(
+                  icon: Icons.history_rounded,
+                  title: 'تصفح واسترجاع النسخ الآمنة',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    await _showSafeBackupsBrowser(note);
+                  },
+                ),
+
+                // 8. مشاركة الملف أو تصدير بطاقة
+                _buildOptionTile(
+                  icon: Icons.ios_share_rounded,
+                  title: 'مشاركة الملف أو تصدير بطاقة فاخرة',
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    await _showShareOptionsDialog(note);
+                  },
+                ),
+
+                const SizedBox(height: 4),
+                Divider(color: s.borderColor, height: 1),
+                const SizedBox(height: 4),
+
+                // 9. حذف الملف نهائياً (بالأحمر)
+                _buildOptionTile(
+                  icon: Icons.delete_outline_rounded,
+                  title: 'حذف الملف نهائياً',
+                  isDestructive: true,
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    final ok = await _verifyPinIfLocked(note);
+                    if (!ok) return;
+                    await _showDeleteConfirmationDialog(note);
+                  },
+                ),
+              ],
             ),
           ),
-        ),
-      ],
+        );
+      },
     );
   }
 
   Widget _buildOptionTile({
     required IconData icon,
     required String title,
-    required Color color,
     required VoidCallback onTap,
-    bool isDanger = false,
+    bool isDestructive = false,
   }) {
-    final textColor =
-        isDanger ? const Color(0xFFDC2626) : widget.settings.primaryTextColor;
+    final color = isDestructive ? const Color(0xFFDC2626) : s.textMainColor;
+    final iconColor = isDestructive ? const Color(0xFFDC2626) : s.accentColor;
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: RuknSpringButton(
-        height: 48,
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        backgroundColor: isDanger
-            ? const Color(0xFFDC2626).withOpacity(0.08)
-            : widget.settings.scaffoldBgColor,
-        borderColor: isDanger
-            ? const Color(0xFFDC2626).withOpacity(0.35)
-            : widget.settings.borderColor,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        onTap: onTap,
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () {
+        RuknHaptics.light();
+        onTap();
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
         child: Row(
           children: [
-            Icon(icon, color: color, size: 21),
+            Icon(icon, color: iconColor, size: 20),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
                 title,
                 style: TextStyle(
-                  color: textColor,
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
+                  fontFamily: s.fontFamily,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: color,
                 ),
               ),
             ),
             Icon(
-              Icons.chevron_right_rounded,
-              color: isDanger
-                  ? const Color(0xFFDC2626)
-                  : widget.settings.secondaryTextColor,
-              size: 20,
+              Icons.chevron_left_rounded,
+              size: 18,
+              color: isDestructive
+                  ? const Color(0xFFDC2626).withOpacity(0.6)
+                  : s.textSubColor.withOpacity(0.6),
             ),
           ],
         ),
@@ -651,1095 +1213,1310 @@ class _RuknHomeScreenState extends State<RuknHomeScreen> {
     );
   }
 
-  /// نافذة إعادة تسمية الملف
-  Future<void> _showRenameNoteDialog(RuknNoteFile note) async {
-    final renameCtrl = TextEditingController(text: note.title);
+  Future<void> _showCategoryAssignDialog(RuknNoteFile note) async {
     await showRuknModalDialog(
       context: context,
-      settings: widget.settings,
-      title: 'إعادة تسمية الملف',
-      subtitle: 'سيتم تلقائياً ربط جميع النسخ الآمنة بالاسم الجديد',
-      headerIcon: Icons.drive_file_rename_outline_rounded,
-      content: TextField(
-        controller: renameCtrl,
-        autofocus: true,
-        textDirection: TextDirection.rtl,
-        style: TextStyle(
-          color: widget.settings.primaryTextColor,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
-        decoration: InputDecoration(
-          hintText: 'الاسم الجديد للملف',
-          filled: true,
-          fillColor: widget.settings.scaffoldBgColor,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-          ),
-        ),
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            gradient: LinearGradient(
-              colors: [
-                widget.settings.activeTheme.primaryDark,
-                widget.settings.activeTheme.primary,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'اختر مجلداً لـ "${note.title}"',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: s.textMainColor,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildCategoryChoiceChip(
+                  label: 'بدون مجلد',
+                  selected: note.category.isEmpty,
+                  onTap: () async {
+                    await v.setNoteCategory(note, '');
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                  },
+                ),
+                ...s.customCategories.map(
+                  (cat) => _buildCategoryChoiceChip(
+                    label: cat,
+                    selected: note.category == cat,
+                    onTap: () async {
+                      await v.setNoteCategory(note, cat);
+                      if (ctx.mounted) Navigator.of(ctx).pop();
+                    },
+                  ),
+                ),
               ],
             ),
-            borderColor: widget.settings.activeTheme.accentGold,
-            onTap: () async {
-              try {
-                final updated = await widget.vault.renameNote(
-                  oldTitle: note.title,
-                  newRawTitle: renameCtrl.text,
-                );
-                if (mounted) {
-                  Navigator.of(context).pop();
-                  if (updated != null) {
-                    showRuknToast(context, 'تم تغيير الاسم إلى: ${updated.title}');
-                  }
-                }
-              } catch (e) {
-                if (mounted) {
-                  showRuknToast(
-                    context,
-                    'يوجد ملف آخر يحمل نفس الاسم!',
-                    icon: Icons.warning_amber_rounded,
-                    backgroundColor: const Color(0xFFDC2626),
-                  );
-                }
-              }
-            },
-            child: const Text(
-              'حفظ الاسم',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
+          ],
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
-  /// نافذة تصفح النسخ الآمنة واستعادتها الذكية الصامتة
-  Future<void> _showSafeBackupsBrowserDialog(RuknNoteFile note) async {
-    final backups = await widget.vault.listSafeBackupsForNote(note.title);
-    if (!mounted) return;
-
+  Future<void> _showRenameDialog(RuknNoteFile note) async {
+    final ctrl = TextEditingController(text: note.title);
     await showRuknModalDialog(
       context: context,
-      settings: widget.settings,
-      title: 'خزنة النسخ الآمنة 🛡️',
-      subtitle: 'النسخ المحفوظة لملف: ${note.title}',
-      headerIcon: Icons.history_edu_rounded,
-      content: backups.isEmpty
-          ? Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child: Column(
-                children: [
-                  Icon(
-                    Icons.inventory_2_outlined,
-                    size: 46,
-                    color: widget.settings.secondaryTextColor,
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    'لا توجد نسخ آمنة محفوظة لهذا الملف حتى الآن.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: widget.settings.secondaryTextColor,
-                      fontSize: 14.5,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'إعادة تسمية الملف',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 16.5,
+                fontWeight: FontWeight.w800,
+                color: s.textMainColor,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                color: s.textMainColor,
+                fontWeight: FontWeight.w700,
+              ),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: s.bgColor,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'إلغاء',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ],
-              ),
-            )
-          : Column(
-              children: backups.map((entry) {
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: widget.settings.scaffoldBgColor,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: widget.settings.borderColor),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: s.primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () async {
+                      final newTitle = ctrl.text.trim();
+                      if (newTitle.isNotEmpty) {
+                        await v.renameNote(note, newTitle);
+                        if (ctx.mounted) Navigator.of(ctx).pop();
+                        if (mounted) {
+                          showRuknToast(context, s, 'تم تغيير اسم الملف');
+                        }
+                      }
+                    },
+                    child: Text(
+                      'حفظ الاسم',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                   ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showSafeBackupsBrowser(RuknNoteFile note) async {
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return FutureBuilder<List<SafeBackupEntry>>(
+              future: v.listSafeBackupsForNote(note),
+              builder: (context, snapshot) {
+                final backups = snapshot.data ?? [];
+                return Padding(
+                  padding: const EdgeInsets.all(20),
                   child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Row(
                         children: [
                           Icon(
-                            Icons.verified_user_rounded,
-                            color: widget.settings.activeTheme.primary,
-                            size: 19,
+                            Icons.history_edu_rounded,
+                            color: s.accentColor,
+                            size: 22,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              entry.formattedTimestamp,
-                              textDirection: TextDirection.ltr,
-                              textAlign: TextAlign.right,
+                              'النسخ الآمنة لـ "${note.title}"',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13.5,
-                                color: widget.settings.primaryTextColor,
+                                fontFamily: s.fontFamily,
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w800,
+                                color: s.textMainColor,
                               ),
-                            ),
-                          ),
-                          Text(
-                            '${entry.sizeBytes} بايت',
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              color: widget.settings.secondaryTextColor,
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: RuknSpringButton(
-                              height: 38,
-                              margin: EdgeInsets.zero,
-                              backgroundColor:
-                                  widget.settings.activeTheme.primary,
-                              onTap: () async {
-                                Navigator.of(context).pop();
-                                await widget.vault.restoreSafeBackupSmartly(
-                                  noteTitle: note.title,
-                                  targetBackup: entry,
-                                );
-                                if (mounted) {
-                                  showRuknToast(
-                                    context,
-                                    'تمت استعادة النسخة الآمنة بنجاح (مع تأمين النص السابق تلقائياً)',
-                                  );
-                                }
-                              },
-                              child: const Text(
-                                'استعادة هذه النسخة',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'عند الاسترجاع، يتم حفظ نصك الحالي تلقائياً في نسخة آمنة أولاً قبل الاستبدال:',
+                        style: TextStyle(
+                          fontFamily: s.fontFamily,
+                          fontSize: 12,
+                          color: s.textSubColor,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      if (snapshot.connectionState == ConnectionState.waiting)
+                        const Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      else if (backups.isEmpty)
+                        Container(
+                          padding: const EdgeInsets.all(24),
+                          decoration: BoxDecoration(
+                            color: s.bgColor,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Center(
+                            child: Text(
+                              'لا توجد نسخ آمنة محفوظة لهذا الملف حتى الآن',
+                              style: TextStyle(
+                                fontFamily: s.fontFamily,
+                                fontSize: 13,
+                                color: s.textSubColor,
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: RuknSpringButton(
-                              height: 38,
-                              margin: EdgeInsets.zero,
-                              backgroundColor: widget.settings.cardBgColor,
-                              borderColor: widget.settings.borderColor,
-                              elevation: 0,
-                              onTap: () async {
-                                final previewText = await widget.vault
-                                    .readSafeBackupContent(entry);
-                                if (mounted) {
-                                  _showBackupPreviewDialog(
-                                    note: note,
-                                    entry: entry,
-                                    previewText: previewText,
-                                  );
-                                }
-                              },
-                              child: Text(
-                                'معاينة النص',
-                                style: TextStyle(
-                                  color: widget.settings.primaryTextColor,
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.bold,
+                        )
+                      else
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 280),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: backups.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (_, idx) {
+                              final b = backups[idx];
+                              final dtStr = DateFormat('yyyy/MM/dd - hh:mm a')
+                                  .format(b.timestamp);
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
                                 ),
-                              ),
-                            ),
+                                decoration: BoxDecoration(
+                                  color: s.bgColor,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: s.borderColor),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            dtStr,
+                                            style: TextStyle(
+                                              fontFamily: s.fontFamily,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w800,
+                                              color: s.textMainColor,
+                                            ),
+                                          ),
+                                          Text(
+                                            'الحجم: ${b.sizeBytes} بايت',
+                                            style: TextStyle(
+                                              fontFamily: s.fontFamily,
+                                              fontSize: 11.5,
+                                              color: s.textSubColor,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    TextButton(
+                                      onPressed: () async {
+                                        await v.restoreSafeBackupSmartly(
+                                          note,
+                                          b,
+                                        );
+                                        if (ctx.mounted) {
+                                          Navigator.of(ctx).pop();
+                                        }
+                                        if (mounted) {
+                                          showRuknToast(
+                                            context,
+                                            s,
+                                            'تم استرجاع النسخة وحفظ نصك السابق بأمان',
+                                          );
+                                        }
+                                      },
+                                      child: Text(
+                                        'استرجاع',
+                                        style: TextStyle(
+                                          fontFamily: s.fontFamily,
+                                          fontWeight: FontWeight.w800,
+                                          color: s.accentColor,
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        color: Color(0xFFDC2626),
+                                        size: 19,
+                                      ),
+                                      onPressed: () async {
+                                        await v.deleteSafeBackup(b);
+                                        setModalState(() {});
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
-                        ],
+                        ),
+                      const SizedBox(height: 14),
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: Text(
+                          'إغلاق',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            color: s.textSubColor,
+                          ),
+                        ),
                       ),
                     ],
                   ),
                 );
-              }).toList(),
-            ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 44,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إغلاق',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
+              },
+            );
+          },
+        );
+      },
     );
   }
 
-  /// نافذة معاينة محتوى النسخة الآمنة قبل استعادتها
-  Future<void> _showBackupPreviewDialog({
-    required RuknNoteFile note,
-    required SafeBackupEntry entry,
-    required String previewText,
-  }) async {
+  Future<void> _showShareOptionsDialog(RuknNoteFile note) async {
     await showRuknModalDialog(
       context: context,
-      settings: widget.settings,
-      title: 'معاينة النسخة الآمنة',
-      subtitle: entry.formattedTimestamp,
-      headerIcon: Icons.visibility_rounded,
-      content: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: widget.settings.paperBgColor,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: widget.settings.borderColor),
-        ),
-        child: SelectableText(
-          previewText.isEmpty ? '(نسخة فارغة)' : previewText,
-          style: TextStyle(
-            color: widget.settings.primaryTextColor,
-            fontSize: 15,
-            height: 1.7,
-          ),
-        ),
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.activeTheme.primary,
-            onTap: () async {
-              Navigator.of(context).pop(); // إغلاق المعاينة
-              Navigator.of(context).pop(); // إغلاق المتصفح
-              await widget.vault.restoreSafeBackupSmartly(
-                noteTitle: note.title,
-                targetBackup: entry,
-              );
-              if (mounted) {
-                showRuknToast(context, 'تمت استعادة النسخة الآمنة بنجاح');
-              }
-            },
-            child: const Text(
-              'استعادة هذه النسخة',
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'مشاركة "${note.title}"',
               style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
+                fontFamily: s.fontFamily,
+                fontSize: 16.5,
+                fontWeight: FontWeight.w800,
+                color: s.textMainColor,
               ),
             ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 45,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'رجوع',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// نافذة اختيار طريقة المشاركة (كبطاقة مصورة فاخرة أو كملف/نص)
-  Future<void> _showShareChoiceDialog(RuknNoteFile note) async {
-    final theme = widget.settings.activeTheme;
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'مشاركة "${note.title}"',
-      subtitle: 'اختر الطريقة الأنسب للمشاركة',
-      headerIcon: Icons.ios_share_rounded,
-      content: Column(
-        children: [
-          _buildOptionTile(
-            icon: Icons.auto_awesome_rounded,
-            title: 'مشاركة كبطاقة مصورة فاخرة (واتساب / سناب)',
-            color: theme.accentGold,
-            onTap: () {
-              Navigator.of(context).pop();
-              showRuknShareCardStudio(
-                context: context,
-                settings: widget.settings,
-                noteTitle: note.title,
-                noteContent: note.content,
-              );
-            },
-          ),
-          _buildOptionTile(
-            icon: Icons.description_outlined,
-            title: 'مشاركة كملف نصي (.txt) أو نص مباشر',
-            color: theme.primary,
-            onTap: () {
-              Navigator.of(context).pop();
-              widget.vault.shareNoteFile(note);
-            },
-          ),
-        ],
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 44,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// نافذة تأكيد الحذف باللون الأحمر الصريح (#DC2626) مع حفظ نسخة آمنة تلقائية قبل الحذف
-  Future<void> _showDeleteConfirmDialog(RuknNoteFile note) async {
-    await showRuknModalDialog(
-      context: context,
-      settings: widget.settings,
-      title: 'تأكيد حذف الملف',
-      subtitle: 'هل أنت متأكد من حذف "${note.title}"؟',
-      headerIcon: Icons.warning_amber_rounded,
-      content: Text(
-        'لحمايتك من فقدان البيانات، سيقوم تطبيق «رُكْن» تلقائياً بحفظ نسخة آمنة من هذا الملف داخل (خزنة_النسخ_الآمنة) قبل حذفه.',
-        style: TextStyle(
-          color: widget.settings.primaryTextColor,
-          fontSize: 14.5,
-          height: 1.6,
-        ),
-      ),
-      actions: [
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: const Color(0xFFDC2626),
-            shadowColor: const Color(0xFFDC2626).withOpacity(0.35),
-            onTap: () async {
-              Navigator.of(context).pop();
-              await widget.vault.deleteNoteWithSafetyBackup(note);
-              if (mounted) {
-                showRuknToast(
-                  context,
-                  'تم حذف الملف (وتم تأمين نسخة في خزنة النسخ الآمنة)',
-                  icon: Icons.delete_sweep_rounded,
+            const SizedBox(height: 14),
+            _buildOptionTile(
+              icon: Icons.photo_Size_select_actual_outlined,
+              title: 'تصميم بطاقة مشاركة فاخرة (انستغرام / واتساب)',
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await showRuknShareCardStudio(
+                  context: context,
+                  settings: s,
+                  noteTitle: note.title,
+                  noteContent: note.content,
                 );
-              }
-            },
-            child: const Text(
-              'حذف الملف',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14.5,
-              ),
+              },
             ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: RuknSpringButton(
-            height: 46,
-            backgroundColor: widget.settings.scaffoldBgColor,
-            borderColor: widget.settings.borderColor,
-            elevation: 0,
-            onTap: () => Navigator.of(context).pop(),
-            child: Text(
-              'إلغاء',
-              style: TextStyle(
-                color: widget.settings.primaryTextColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 14.5,
-              ),
+            _buildOptionTile(
+              icon: Icons.subject_rounded,
+              title: 'مشاركة كنص مباشر',
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await Share.share(
+                  '${note.title}\n\n${note.content}',
+                  subject: note.title,
+                );
+              },
             ),
-          ),
+            _buildOptionTile(
+              icon: Icons.insert_drive_file_outlined,
+              title: 'مشاركة كملف نصي (.txt)',
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                final file = File(note.filePath);
+                if (await file.exists()) {
+                  await Share.shareXFiles(
+                    [XFile(file.path, mimeType: 'text/plain')],
+                    subject: note.title,
+                  );
+                }
+              },
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
-  String _formatNoteDateTime(DateTime dt) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    int hour = dt.hour;
-    final amPm = hour >= 12 ? 'م' : 'ص';
-    hour = hour % 12;
-    if (hour == 0) hour = 12;
-    return '${dt.year}/${two(dt.month)}/${two(dt.day)}  •  $hour:${two(dt.minute)} $amPm';
+  Future<void> _showDeleteConfirmationDialog(RuknNoteFile note) async {
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Color(0xFFDC2626),
+                  size: 24,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'تأكيد حذف الملف',
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 16.5,
+                      fontWeight: FontWeight.w800,
+                      color: const Color(0xFFDC2626),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'هل أنت متأكد من حذف "${note.title}"؟\nسيقوم رُكْن بحفظ نسخة احتياطية صامتة في الخزنة الآمنة قبل الحذف.',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 13.5,
+                height: 1.5,
+                color: s.textMainColor,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'تراجع',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        color: s.textSubColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFDC2626),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () async {
+                      Navigator.of(ctx).pop();
+                      await v.deleteNoteWithSafetyBackup(note);
+                      if (mounted) {
+                        showRuknToast(context, s, 'تم حذف الملف');
+                      }
+                    },
+                    child: Text(
+                      'حذف الملف',
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showVaultZipBackupModal() async {
+    await showRuknModalDialog(
+      context: context,
+      settings: s,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.archive_outlined,
+                  color: s.accentColor,
+                  size: 24,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'النسخ الاحتياطي الشامل (ZIP)',
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 16.5,
+                      fontWeight: FontWeight.w800,
+                      color: s.textMainColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'يجمع كافة مذكراتك النصية ونسخك الآمنة في ملف مضغوط واحد (.zip) لحفظه في الهاتف أو إرساله سحابياً:',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 13,
+                height: 1.5,
+                color: s.textSubColor,
+              ),
+            ),
+            const SizedBox(height: 16),
+            _buildOptionTile(
+              icon: Icons.download_done_rounded,
+              title: 'حفظ في تنزيلات الهاتف فقط (Downloads)',
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await _runZipBackup(saveToDevice: true, shareExternally: false);
+              },
+            ),
+            _buildOptionTile(
+              icon: Icons.share_outlined,
+              title: 'مشاركة خارجية فقط (واتساب / تيليجرام / درايف)',
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await _runZipBackup(saveToDevice: false, shareExternally: true);
+              },
+            ),
+            _buildOptionTile(
+              icon: Icons.cloud_done_outlined,
+              title: 'حفظ في الهاتف + مشاركة خارجية معاً',
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await _runZipBackup(saveToDevice: true, shareExternally: true);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _runZipBackup({
+    required bool saveToDevice,
+    required bool shareExternally,
+  }) async {
+    setState(() => _isExportingZip = true);
+    try {
+      final msg = await v.exportFullVaultZip(
+        saveToDevice: saveToDevice,
+        shareExternally: shareExternally,
+      );
+      if (mounted) {
+        showRuknToast(context, s, msg);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isExportingZip = false);
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = widget.settings.activeTheme;
     final filteredNotes = _getFilteredNotes();
 
-    return Scaffold(
-      backgroundColor: widget.settings.scaffoldBgColor,
-      body: Column(
-        children: [
-          // 1. البطاقة الملكية العلوية الثابتة (Hero Header Card)
-          _buildHeroHeaderCard(theme),
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: s.bgColor,
+        body: Column(
+          children: [
+            // 1. الهيدر الملكي الفاخر (يقتصر على مسمى رُكْن)
+            _buildLuxuryHeader(),
 
-          // 2. المنطقة الوسطى القابلة للتمرير (التصنيفات + البحث الموحد + قائمة البطاقات)
-          Expanded(
-            child: SingleChildScrollView(
-              controller: _homeScrollController,
-              physics: const BouncingScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+            // 2. شريط البحث + زر الإنشاء السريع
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+              child: Row(
                 children: [
-                  // سطر العنوان (ملفاتي النصية يميناً وشارة TXT يساراً)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
+                  Expanded(
+                    child: Container(
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: s.cardColor,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: s.borderColor),
+                      ),
+                      child: TextField(
+                        controller: _searchController,
+                        style: TextStyle(
+                          fontFamily: s.fontFamily,
+                          fontSize: 14,
+                          color: s.textMainColor,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: 'ابحث في عناوين ومحتوى مذكراتك...',
+                          hintStyle: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 13,
+                            color: s.textSubColor,
+                          ),
+                          prefixIcon: Icon(
+                            Icons.search_rounded,
+                            color: s.accentColor,
+                            size: 20,
+                          ),
+                          suffixIcon: _searchQuery.isNotEmpty
+                              ? IconButton(
+                                  icon: Icon(
+                                    Icons.close_rounded,
+                                    size: 18,
+                                    color: s.textSubColor,
+                                  ),
+                                  onPressed: () => _searchController.clear(),
+                                )
+                              : null,
+                          border: InputBorder.none,
+                          contentPadding:
+                              const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  RuknSpringButton(
+                    onTap: _showCreateNoteDialog,
+                    child: Container(
+                      height: 46,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [s.primaryColor, s.primaryDarkColor],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: s.accentColor.withOpacity(0.55),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: s.primaryColor.withOpacity(0.28),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
-                            Icons.folder_special_rounded,
-                            color: theme.primary,
-                            size: 22,
+                            Icons.add_rounded,
+                            color: s.accentColor,
+                            size: 20,
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 5),
                           Text(
-                            'ملفاتي النصية (${filteredNotes.length})',
+                            'جديد',
                             style: TextStyle(
-                              fontSize: 17.5,
-                              fontWeight: FontWeight.bold,
-                              color: widget.settings.primaryTextColor,
+                              fontFamily: s.fontFamily,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
                             ),
                           ),
                         ],
                       ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: theme.primary.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: theme.accentGold.withOpacity(0.55),
-                          ),
-                        ),
-                        child: Text(
-                          'TXT • UTF-8',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.bold,
-                            color: theme.primary,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
-                  // شريط التصنيفات الخليجية السريعة
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    physics: const BouncingScrollPhysics(),
-                    child: Row(
-                      children: RuknCategory.allCategories.map((cat) {
-                        final selected = _selectedCategoryId == cat.id;
-                        return Padding(
-                          padding: const EdgeInsets.only(left: 8),
-                          child: GestureDetector(
-                            onTap: () {
-                              RuknHaptics.selectionClick();
-                              setState(() => _selectedCategoryId = cat.id);
-                            },
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 180),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 13, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: selected
-                                    ? theme.primary
-                                    : widget.settings.cardBgColor,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: selected
-                                      ? theme.accentGold
-                                      : widget.settings.borderColor,
-                                  width: selected ? 1.3 : 1.0,
-                                ),
-                                boxShadow: selected
-                                    ? [
-                                        BoxShadow(
-                                          color:
-                                              theme.primary.withOpacity(0.25),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 3),
-                                        )
-                                      ]
-                                    : null,
-                              ),
-                              child: Text(
-                                '${cat.emoji}  ${cat.title}',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                  color: selected
-                                      ? Colors.white
-                                      : widget.settings.primaryTextColor,
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      }).toList(),
                     ),
                   ),
-                  const SizedBox(height: 12),
-
-                  // شريط البحث العربي الذكي الموحد (يتحرك مع القائمة لتوفير أكبر مساحة)
-                  Container(
-                    decoration: BoxDecoration(
-                      color: widget.settings.cardBgColor,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: _searchQuery.isNotEmpty
-                            ? theme.primary
-                            : widget.settings.borderColor,
-                        width: 1.2,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: TextField(
-                      controller: _searchController,
-                      onChanged: (val) {
-                        setState(() {
-                          _searchQuery = val;
-                        });
-                      },
-                      style: TextStyle(
-                        color: widget.settings.primaryTextColor,
-                        fontSize: 15,
-                      ),
-                      decoration: InputDecoration(
-                        hintText:
-                            'ابحث بذكاء في عناوين ومحتوى ملاحظاتك (يتجاهل التشكيل)...',
-                        hintStyle: TextStyle(
-                          color: widget.settings.secondaryTextColor,
-                          fontSize: 13.5,
-                        ),
-                        prefixIcon: Icon(
-                          Icons.search_rounded,
-                          color: theme.primary,
-                        ),
-                        suffixIcon: _searchQuery.isNotEmpty
-                            ? IconButton(
-                                icon: Icon(
-                                  Icons.clear_rounded,
-                                  color: widget.settings.secondaryTextColor,
-                                ),
-                                onPressed: () {
-                                  _searchController.clear();
-                                  setState(() => _searchQuery = '');
-                                },
-                              )
-                            : null,
-                        border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 13),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-
-                  // قائمة بطاقات الملفات
-                  if (filteredNotes.isEmpty)
-                    _buildEmptyNotesState(theme)
-                  else
-                    ...filteredNotes.map(
-                      (note) => _buildNoteCard(note, theme),
-                    ),
                 ],
               ),
             ),
-          ),
 
-          // 3. الشريط السفلي الثابت (Bottom Bar) مع عدم اقتصاص الأزرار أو الظلال
-          _buildBottomFixedBar(theme),
-        ],
+            // 3. شريط المجلدات الأفقي (نصوص صافية بدون إيموجي + قابل للتعديل والإضافة والحذف)
+            _buildCategoriesBar(),
+
+            const SizedBox(height: 6),
+
+            // 4. قائمة المذكرات
+            Expanded(
+              child: v.isLoading
+                  ? Center(
+                      child: CircularProgressIndicator(color: s.accentColor),
+                    )
+                  : filteredNotes.isEmpty
+                      ? _buildEmptyState()
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(16, 6, 16, 20),
+                          itemCount: filteredNotes.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (_, idx) =>
+                              _buildNoteCard(filteredNotes[idx]),
+                        ),
+            ),
+
+            // 5. الشريط السفلي الثابت (الأزرار متوسطة تماماً وغير مقصوصة)
+            _buildBottomActionBar(),
+          ],
+        ),
       ),
     );
   }
 
-  /// بناء البطاقة الملكية العلوية الثابتة (Hero Header Card)
-  Widget _buildHeroHeaderCard(GulfThemeData theme) {
-    final topPadding = MediaQuery.of(context).padding.top;
-
+  Widget _buildLuxuryHeader() {
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.fromLTRB(18, topPadding + 14, 18, 18),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            theme.primaryDark,
-            theme.primary,
-          ],
+          colors: [s.primaryColor, s.primaryDarkColor],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
         ),
         borderRadius: const BorderRadius.vertical(
           bottom: Radius.circular(24),
         ),
-        border: Border(
-          bottom: BorderSide(
-            color: theme.accentGold.withOpacity(0.55),
-            width: 1.2,
-          ),
-        ),
         boxShadow: [
           BoxShadow(
-            color: theme.primaryDark.withOpacity(0.32),
+            color: s.primaryDarkColor.withOpacity(0.26),
             blurRadius: 14,
-            offset: const Offset(0, 6),
+            offset: const Offset(0, 5),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          // العنوان الرئيسي في المنتصف (مع إمكانية التخصيص السريع باللمس)
-          GestureDetector(
-            onTap: _showQuickPersonalizeDialog,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  widget.settings.fullPersonalHeaderTitle,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 23,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.14),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.edit_rounded,
-                    color: theme.accentGold,
-                    size: 14,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 4),
-          // العنوان الفرعي في المنتصف
-          Text(
-            widget.settings.customSubtitle,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.88),
-              fontSize: 14,
-            ),
-          ),
-          if (widget.settings.showHijriInHeader) ...[
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.18),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: theme.accentGold.withOpacity(0.35),
-                  width: 0.8,
-                ),
-              ),
-              child: Text(
-                SmartArabicEngine.getHijriAndGregorianHeaderDate(),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: theme.accentGold,
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-          const SizedBox(height: 14),
-          // زر عريض "＋  ملف جديد" بارتفاع 46dp
-          RuknSpringButton(
-            height: 46,
-            width: double.infinity,
-            margin: const EdgeInsets.only(bottom: 2),
-            backgroundColor: Colors.white,
-            borderColor: theme.accentGold,
-            borderRadius: 15,
-            elevation: 4,
-            onTap: _showCreateNewNoteDialog,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.add_circle_rounded,
-                  color: theme.primaryDark,
-                  size: 21,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '＋  ملف جديد',
-                  style: TextStyle(
-                    color: theme.primaryDark,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// بناء بطاقة ملف واحد في القائمة الرئيسية
-  Widget _buildNoteCard(RuknNoteFile note, GulfThemeData theme) {
-    final snippet = note.isLocked && widget.settings.pinCode.isNotEmpty
-        ? '🔒 محتوى خاص محمي برمز القفل...'
-        : SmartArabicEngine.extractSmartSnippet(note.content, _searchQuery);
-
-    final catObj = RuknCategory.allCategories.firstWhere(
-      (c) => c.id == note.categoryId,
-      orElse: () => RuknCategory.allCategories.first,
-    );
-
-    final baseTitleStyle = TextStyle(
-      fontSize: 16.5,
-      fontWeight: FontWeight.bold,
-      color: widget.settings.primaryTextColor,
-      fontFamily: widget.settings.activeFontFamily,
-    );
-
-    final baseSnippetStyle = TextStyle(
-      fontSize: 13.5,
-      height: 1.55,
-      color: widget.settings.secondaryTextColor,
-      fontFamily: widget.settings.activeFontFamily,
-    );
-
-    return RuknSpringButton(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
-      backgroundColor: widget.settings.cardBgColor,
-      borderRadius: 18,
-      elevation: 2.5,
-      borderColor: note.isPinned
-          ? theme.accentGold.withOpacity(0.85)
-          : widget.settings.borderColor,
-      onTap: () => _openNoteDocument(note),
-      onLongPress: () => _showFileOptionsMenu(note),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (note.isPinned) ...[
-                const Text('📌', style: TextStyle(fontSize: 16)),
-                const SizedBox(width: 6),
-              ],
-              if (note.isLocked) ...[
-                Icon(Icons.lock_rounded, color: theme.accentGold, size: 17),
-                const SizedBox(width: 6),
-              ],
-              Expanded(
-                child: RichText(
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textDirection: TextDirection.rtl,
-                  text: SmartArabicEngine.buildHighlightedTextSpan(
-                    text: note.title,
-                    query: _searchQuery,
-                    baseStyle: baseTitleStyle,
+              Row(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _showPersonalHeaderModal,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              s.fullHeaderTitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontFamily: s.fontFamily,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.all(5),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(
+                              Icons.edit_outlined,
+                              color: s.accentColor,
+                              size: 15,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
+                  // تبديل الوضع الليلي/النهاري السريع
+                  RuknSpringButton(
+                    onTap: () => s.setDarkMode(!s.isDarkMode),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: s.accentColor.withOpacity(0.4),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            s.isDarkMode
+                                ? Icons.light_mode_outlined
+                                : Icons.dark_mode_outlined,
+                            color: s.accentColor,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            s.isDarkMode ? 'نهاري' : 'ليلي',
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                s.headerSubtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: s.fontFamily,
+                  fontSize: 12.5,
+                  color: Colors.white.withOpacity(0.84),
                 ),
               ),
-              if (note.categoryId != 'all') ...[
+              if (s.showHijriDateInHeader) ...[
+                const SizedBox(height: 8),
                 Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 6),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
-                    color: theme.primary.withOpacity(0.10),
+                    color: Colors.black.withOpacity(0.18),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    '${catObj.emoji} ${catObj.title}',
+                    SmartArabicEngine.getHeaderDateString(),
                     style: TextStyle(
+                      fontFamily: s.fontFamily,
                       fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: theme.primary,
+                      fontWeight: FontWeight.w600,
+                      color: s.accentColor,
                     ),
                   ),
                 ),
               ],
-              // زر الثلاث نقاط (⋮)
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () {
-                  RuknHaptics.lightTap();
-                  _showFileOptionsMenu(note);
-                },
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: widget.settings.scaffoldBgColor,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: widget.settings.borderColor),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCategoriesBar() {
+    final List<String> allTabs = [
+      'الكل',
+      'المثبتة',
+      ...s.customCategories,
+    ];
+
+    return SizedBox(
+      height: 42,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        itemCount: allTabs.length + 1,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (_, idx) {
+          // الزر الأخير: إدارة وتعديل المجلدات
+          if (idx == allTabs.length) {
+            return GestureDetector(
+              onTap: () {
+                RuknHaptics.light();
+                _showManageFoldersModal();
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: s.cardColor,
+                  borderRadius: BorderRadius.circular(11),
+                  border: Border.all(
+                    color: s.accentColor.withOpacity(0.55),
                   ),
-                  child: Icon(
-                    Icons.more_vert_rounded,
-                    color: widget.settings.primaryTextColor,
-                    size: 20,
+                ),
+                child: Text(
+                  '+ تعديل المجلدات',
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: s.accentColor,
                   ),
                 ),
               ),
-            ],
+            );
+          }
+
+          final tab = allTabs[idx];
+          final selected = _selectedCategory == tab;
+          final isCustom = tab != 'الكل' && tab != 'المثبتة';
+
+          return GestureDetector(
+            onTap: () {
+              RuknHaptics.selection();
+              setState(() => _selectedCategory = tab);
+            },
+            onLongPress: isCustom
+                ? () {
+                    RuknHaptics.medium();
+                    _showManageFoldersModal();
+                  }
+                : null,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected ? s.primaryColor : s.cardColor,
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(
+                  color: selected ? s.accentColor : s.borderColor,
+                  width: selected ? 1.3 : 1.0,
+                ),
+              ),
+              child: Text(
+                tab,
+                style: TextStyle(
+                  fontFamily: s.fontFamily,
+                  fontSize: 12.5,
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                  color: selected ? Colors.white : s.textMainColor,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildNoteCard(RuknNoteFile note) {
+    final dateStr = DateFormat('yyyy/MM/dd').format(note.lastModified);
+    final snippet = note.isLocked
+        ? 'محتوى محمي برمز القفل السري (PIN)'
+        : (_searchQuery.isNotEmpty
+            ? SmartArabicEngine.extractSearchSnippet(note.content, _searchQuery)
+            : (note.content.trim().isEmpty
+                ? 'مذكرة فارغة — اضغط للكتابة...'
+                : note.content.trim().replaceAll('\n', ' ')));
+
+    return RuknSpringButton(
+      onTap: () => _openNote(note),
+      onLongPress: () => _showFileOptionsMenu(note),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        decoration: BoxDecoration(
+          color: s.cardColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: note.isPinned
+                ? s.accentColor.withOpacity(0.65)
+                : s.borderColor,
+            width: note.isPinned ? 1.3 : 1.0,
           ),
-          if (snippet.isNotEmpty) ...[
-            const SizedBox(height: 7),
-            RichText(
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              textDirection: TextDirection.rtl,
-              text: SmartArabicEngine.buildHighlightedTextSpan(
-                text: snippet,
-                query: note.isLocked ? '' : _searchQuery,
-                baseStyle: baseSnippetStyle,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(s.isDarkMode ? 0.16 : 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                if (note.isPinned) ...[
+                  Icon(
+                    Icons.push_pin_rounded,
+                    size: 16,
+                    color: s.accentColor,
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                if (note.isLocked) ...[
+                  Icon(
+                    Icons.lock_rounded,
+                    size: 16,
+                    color: s.accentColor,
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                Expanded(
+                  child: _searchQuery.isNotEmpty
+                      ? RichText(
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          text: SmartArabicEngine.buildHighlightedTextSpan(
+                            text: note.title,
+                            query: _searchQuery,
+                            baseStyle: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontSize: 15.5,
+                              fontWeight: FontWeight.w800,
+                              color: s.textMainColor,
+                            ),
+                          ),
+                        )
+                      : Text(
+                          note.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 15.5,
+                            fontWeight: FontWeight.w800,
+                            color: s.textMainColor,
+                          ),
+                        ),
+                ),
+                if (note.category.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: s.primaryColor.withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: s.accentColor.withOpacity(0.35),
+                      ),
+                    ),
+                    child: Text(
+                      note.category,
+                      style: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        color: s.accentColor,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 4),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _showFileOptionsMenu(note),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      Icons.more_vert_rounded,
+                      size: 20,
+                      color: s.textSubColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            _searchQuery.isNotEmpty && !note.isLocked
+                ? RichText(
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    text: SmartArabicEngine.buildHighlightedTextSpan(
+                      text: snippet,
+                      query: _searchQuery,
+                      baseStyle: TextStyle(
+                        fontFamily: s.fontFamily,
+                        fontSize: 13,
+                        height: 1.45,
+                        color: s.textSubColor,
+                      ),
+                    ),
+                  )
+                : Text(
+                    snippet,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 13,
+                      height: 1.45,
+                      color: s.textSubColor,
+                    ),
+                  ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Text(
+                  dateStr,
+                  style: TextStyle(
+                    fontFamily: s.fontFamily,
+                    fontSize: 11,
+                    color: s.textSubColor.withOpacity(0.8),
+                  ),
+                ),
+                const Spacer(),
+                if (!note.isLocked)
+                  Text(
+                    '${SmartArabicEngine.computeStats(note.content).words} كلمة',
+                    style: TextStyle(
+                      fontFamily: s.fontFamily,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: s.textSubColor.withOpacity(0.85),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: s.cardColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: s.borderColor),
+              ),
+              child: Icon(
+                Icons.notes_rounded,
+                size: 36,
+                color: s.accentColor,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              _searchQuery.isNotEmpty
+                  ? 'لا توجد نتائج مطابقة لبحثك'
+                  : 'لا توجد مذكرات في هذا القسم',
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: s.textMainColor,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _searchQuery.isNotEmpty
+                  ? 'جرّب البحث بكلمات أخرى'
+                  : 'اضغط على زر "+ جديد" في الأعلى لبدء تدوين مذكرتك الأولى',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: s.fontFamily,
+                fontSize: 13,
+                color: s.textSubColor,
               ),
             ),
           ],
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                _formatNoteDateTime(note.lastModified),
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: widget.settings.secondaryTextColor.withOpacity(0.85),
-                ),
-              ),
-              Text(
-                '${SmartArabicEngine.computeStats(note.content).words} كلمة',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: theme.primary,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyNotesState(GulfThemeData theme) {
-    return Container(
-      margin: const EdgeInsets.only(top: 24),
-      padding: const EdgeInsets.all(28),
-      decoration: BoxDecoration(
-        color: widget.settings.cardBgColor,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: widget.settings.borderColor),
-      ),
-      child: Column(
-        children: [
-          Icon(
-            _searchQuery.isNotEmpty
-                ? Icons.search_off_rounded
-                : Icons.auto_stories_outlined,
-            size: 52,
-            color: theme.primary.withOpacity(0.65),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            _searchQuery.isNotEmpty
-                ? 'لا توجد نتائج مطابقة لبحثك "$_searchQuery"'
-                : 'لا توجد ملفات في هذا التصنيف حالياً',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: widget.settings.primaryTextColor,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'اضغط على زر «＋ ملف جديد» في الأعلى لبدء التدوين في ركنك الخاص',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 13.5,
-              color: widget.settings.secondaryTextColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// الشريط السفلي الثابت (⚙ الإعدادات + نسخ احتياطي ZIP) بارتفاع 46dp مع عدم الاقتصاص
-  Widget _buildBottomFixedBar(GulfThemeData theme) {
-    final bottomInset = MediaQuery.of(context).padding.bottom;
-
-    return Container(
-      padding: EdgeInsets.fromLTRB(16, 10, 16, bottomInset + 12),
-      decoration: BoxDecoration(
-        color: widget.settings.cardBgColor,
-        border: Border(
-          top: BorderSide(color: widget.settings.borderColor, width: 1),
         ),
+      ),
+    );
+  }
+
+  Widget _buildBottomActionBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: s.cardColor,
+        border: Border(top: BorderSide(color: s.borderColor)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 12,
+            color: Colors.black.withOpacity(s.isDarkMode ? 0.25 : 0.05),
+            blurRadius: 10,
             offset: const Offset(0, -3),
           ),
         ],
       ),
-      child: Row(
-        children: [
-          // زر الإعدادات
-          Expanded(
-            child: RuknSpringButton(
-              height: 46,
-              margin: const EdgeInsets.only(bottom: 4),
-              backgroundColor: widget.settings.scaffoldBgColor,
-              borderColor: theme.primary.withOpacity(0.45),
-              borderRadius: 14,
-              elevation: 2,
-              onTap: _openSettingsScreen,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.settings_rounded, color: theme.primary, size: 20),
-                  const SizedBox(width: 8),
-                  Text(
-                    '⚙  الإعدادات',
-                    style: TextStyle(
-                      color: widget.settings.primaryTextColor,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14.5,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          // زر نسخ احتياطي (ZIP)
-          Expanded(
-            child: RuknSpringButton(
-              height: 46,
-              margin: const EdgeInsets.only(bottom: 4),
-              gradient: LinearGradient(
-                colors: [theme.primaryDark, theme.primary],
-              ),
-              borderColor: theme.accentGold,
-              borderRadius: 14,
-              elevation: 3,
-              onTap: () async {
-                if (_isCreatingZip) return;
-                setState(() => _isCreatingZip = true);
-                try {
-                  final savedPath = await widget.vault.exportFullZipBackup();
-                  if (mounted) {
-                    showRuknToast(
-                      context,
-                      'تم حفظ ومشاركة النسخة الاحتياطية ZIP: $savedPath',
-                      icon: Icons.folder_zip_rounded,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+          child: Row(
+            children: [
+              // زر الإعدادات (متوسط تماماً)
+              Expanded(
+                child: RuknSpringButton(
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => SettingsScreen(settings: s),
+                      ),
                     );
-                  }
-                } finally {
-                  if (mounted) {
-                    setState(() => _isCreatingZip = false);
-                  }
-                }
-              },
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.folder_zip_rounded,
-                    color: theme.accentGold,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _isCreatingZip ? 'جارٍ الضغط...' : 'نسخ احتياطي (ZIP)',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14.5,
+                  },
+                  child: Container(
+                    height: 46,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: s.bgColor,
+                      borderRadius: BorderRadius.circular(13),
+                      border: Border.all(color: s.borderColor, width: 1.2),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.tune_rounded,
+                          color: s.accentColor,
+                          size: 19,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'الإعدادات',
+                          style: TextStyle(
+                            fontFamily: s.fontFamily,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w800,
+                            color: s.textMainColor,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
+                ),
               ),
-            ),
+              const SizedBox(width: 12),
+              // زر النسخ الاحتياطي (ZIP) - متوسط تماماً داخل الإطار
+              Expanded(
+                child: RuknSpringButton(
+                  onTap: _isExportingZip ? null : _showVaultZipBackupModal,
+                  child: Container(
+                    height: 46,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [s.primaryColor, s.primaryDarkColor],
+                        begin: Alignment.topRight,
+                        end: Alignment.bottomLeft,
+                      ),
+                      borderRadius: BorderRadius.circular(13),
+                      border: Border.all(
+                        color: s.accentColor.withOpacity(0.55),
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_isExportingZip)
+                          const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        else
+                          Icon(
+                            Icons.archive_outlined,
+                            color: s.accentColor,
+                            size: 19,
+                          ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            'نسخ احتياطي (ZIP)',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontFamily: s.fontFamily,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
