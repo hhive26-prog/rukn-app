@@ -105,7 +105,7 @@ jobs:
             -keypass rukn123456 \
             -dname "CN=Rukn Luxury App, OU=Mobile, O=Rukn, L=Riyadh, S=Riyadh, C=SA"
 
-      - name: Prepare Clean Flutter Workspace, Auto-Harmonize Dart Symbols & Assets
+      - name: Prepare Clean Flutter Workspace, Harmonize Symbols & Download Fonts
         run: |
           mkdir -p build_workspace
           cd build_workspace
@@ -114,144 +114,129 @@ jobs:
           rm -rf lib/*
           cp -r "$GITHUB_WORKSPACE/lib/"* lib/
 
-          if grep -q "class EditorScreen" lib/home_screen.dart; then
-            echo "export 'home_screen.dart';" > lib/editor_screen.dart
-          fi
+          python3 - << 'PYEOF'
+          import re, os
 
-          # تحديث محرك العربية الذكي ليدعم جميع الدوال المستدعاة في الواجهة والمحرر
-          cat << 'EOF' > lib/smart_arabic_engine.dart
-          import 'package:hijri/hijri_calendar.dart';
-          import 'package:intl/intl.dart' hide TextDirection;
+          # -------------------------------------------------------------------------
+          # 1. PRESERVE original lib/smart_arabic_engine.dart & inject missing bridges
+          # -------------------------------------------------------------------------
+          if os.path.exists("lib/smart_arabic_engine.dart"):
+              with open("lib/smart_arabic_engine.dart", "r", encoding="utf-8") as f:
+                  sae = f.read()
 
-          class DocumentStats {
-            final int words;
-            final int chars;
-            final int charsNoSpaces;
-            final int lines;
-            final int paragraphs;
-            final int readingSeconds;
+              if "hijri_calendar.dart" not in sae:
+                  sae = "import 'package:hijri/hijri_calendar.dart';\n" + sae
+              if "package:intl/intl.dart" not in sae:
+                  sae = "import 'package:intl/intl.dart' hide TextDirection;\n" + sae
 
-            const DocumentStats({
-              required this.words,
-              required this.chars,
-              required this.charsNoSpaces,
-              required this.lines,
-              required this.paragraphs,
-              required this.readingSeconds,
-            });
+              # 1a. Add `int get characters` to DocumentStats using its actual field name
+              m_stats = re.search(r"class\s+DocumentStats\s*\{([\s\S]*?)\}", sae)
+              if m_stats and "get characters" not in m_stats.group(1) and "int characters" not in m_stats.group(1):
+                  stats_body = m_stats.group(1)
+                  int_fields = re.findall(r"final\s+int\s+(\w+)\s*;", stats_body)
+                  char_field = "0"
+                  for candidate in ["chars", "charCount", "characterCount", "totalChars", "charsWithSpaces", "length"]:
+                      if candidate in int_fields:
+                          char_field = candidate
+                          break
+                  if char_field == "0" and len(int_fields) >= 2:
+                      char_field = int_fields[1]
+                  sae = re.sub(
+                      r"(class\s+DocumentStats\s*\{)",
+                      rf"\1\n  int get characters => {char_field};",
+                      sae,
+                      count=1
+                  )
 
-            int get characters => chars;
-            int get readingMinutes => (readingSeconds / 60).ceil();
+              # 1b. Determine how calculateNumbersInText is used in lib/editor_screen.dart
+              calc_ret_type = "String?"
+              calc_ret_empty = "null"
+              calc_ret_val = "summary"
+              if os.path.exists("lib/editor_screen.dart"):
+                  with open("lib/editor_screen.dart", "r", encoding="utf-8") as fed:
+                      ed_src = fed.read()
+                  m_calc = re.search(r"calculateNumbersInText\([^)]+\);([\s\S]{0,500})", ed_src)
+                  if m_calc:
+                      snip = m_calc.group(1)
+                      props = re.findall(r"\bres\.(\w+)", snip)
+                      checks_null = ("res == null" in snip) or ("res != null" in snip)
+                      non_str = [p for p in props if p not in ("isEmpty", "isNotEmpty", "length", "trim")]
+                      if len(non_str) == 0:
+                          if not checks_null:
+                              calc_ret_type = "String"
+                              calc_ret_empty = "''"
+                      else:
+                          calc_ret_type = "dynamic"
 
-            String get readingTimeLabel {
-              if (words == 0) return '٠ د';
-              if (readingSeconds < 60) return '${readingSeconds} ث';
-              final mins = (readingSeconds / 60).ceil();
-              return '$mins د';
-            }
-          }
-
-          class NumberCalculationResult {
-            final int count;
-            final double sum;
-            final double average;
-            final double min;
-            final double max;
-            final List<double> numbers;
-
-            const NumberCalculationResult({
-              required this.count,
-              required this.sum,
-              required this.average,
-              required this.min,
-              required this.max,
-              required this.numbers,
-            });
-
-            bool get hasNumbers => count > 0;
-            bool get isEmpty => count == 0;
-            bool get isNotEmpty => count > 0;
-
-            static String _fmt(double v) {
-              if (v == v.roundToDouble()) return v.toInt().toString();
-              return v.toStringAsFixed(2);
-            }
-
-            String get formattedSum => _fmt(sum);
-            String get formattedAverage => _fmt(average);
-            String get formattedMin => _fmt(min);
-            String get formattedMax => _fmt(max);
-
-            String get summary {
-              if (count == 0) return 'لا توجد أرقام في النص المحدد';
-              return 'العدد: $count | المجموع: $formattedSum | المتوسط: $formattedAverage | الأعلى: $formattedMax | الأدنى: $formattedMin';
-            }
-
-            String get report => summary;
-            String get formatted => summary;
-            String get text => summary;
-
-            @override
-            String toString() => summary;
-          }
-
-          class SmartArabicEngine {
-            static const List<String> _arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-            static const List<String> _westernDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-
-            static const List<String> _hijriMonthsAr = [
+              # 1c. Inject self-contained missing static methods into SmartArabicEngine
+              bridge_methods = f"""
+            static const List<String> _rkArDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+            static const List<String> _rkEnDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+            static const List<String> _rkHijriMonths = [
               'محرم', 'صفر', 'ربيع الأول', 'ربيع الآخر',
               'جمادى الأولى', 'جمادى الآخرة', 'رجب', 'شعبان',
               'رمضان', 'شوال', 'ذو القعدة', 'ذو الحجة',
             ];
-
-            static const List<String> _gregorianMonthsAr = [
+            static const List<String> _rkGregMonths = [
               'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
               'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
             ];
-
-            static const List<String> _weekdaysAr = [
+            static const List<String> _rkWeekdays = [
               'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد',
             ];
 
-            static String normalizeForSearch(String input) {
+            static String _rkToWestern(String input) {{
+              String out = input;
+              for (int i = 0; i < 10; i++) {{
+                out = out.replaceAll(_rkArDigits[i], _rkEnDigits[i]);
+              }}
+              return out;
+            }}
+
+            static String _rkToArabic(String input) {{
+              String out = input;
+              for (int i = 0; i < 10; i++) {{
+                out = out.replaceAll(_rkEnDigits[i], _rkArDigits[i]);
+              }}
+              return out;
+            }}
+
+            static String _rkNormalize(String input) {{
               if (input.isEmpty) return '';
               String s = input.toLowerCase();
-              s = s.replaceAll(RegExp(r'[\u064B-\u065F\u0670\u0640]'), '');
+              s = s.replaceAll(RegExp(r'[\\u064B-\\u065F\\u0670\\u0640]'), '');
               s = s.replaceAll(RegExp(r'[أإآٱ]'), 'ا');
               s = s.replaceAll('ة', 'ه');
               s = s.replaceAll('ى', 'ي');
               s = s.replaceAll('ؤ', 'و');
               s = s.replaceAll('ئ', 'ي');
-              s = toWesternDigits(s);
-              return s.trim();
-            }
-
-            static String normalizeArabic(String input) => normalizeForSearch(input);
-
-            static bool smartSearchMatch(String text, String query) {
+              return _rkToWestern(s).trim();
+            }}
+          """
+              if "containsSmartMatch(" not in sae:
+                  bridge_methods += """
+            static bool containsSmartMatch(String text, String query) {
               if (query.trim().isEmpty) return true;
-              final normText = normalizeForSearch(text);
-              final normQuery = normalizeForSearch(query);
+              final normText = _rkNormalize(text);
+              final normQuery = _rkNormalize(query);
               if (normQuery.isEmpty) return true;
-              final tokens = normQuery.split(RegExp(r'\s+')).where((t) => t.isNotEmpty);
-              for (final token in tokens) {
+              for (final token in normQuery.split(RegExp(r'\\s+')).where((t) => t.isNotEmpty)) {
                 if (!normText.contains(token)) return false;
               }
               return true;
             }
-
-            static bool containsSmartMatch(String text, String query) => smartSearchMatch(text, query);
-
+          """
+              if "extractSearchSnippet(" not in sae:
+                  bridge_methods += """
             static String extractSearchSnippet(String content, String query, {int maxLength = 110}) {
-              final clean = content.replaceAll(RegExp(r'\s+'), ' ').trim();
+              final clean = content.replaceAll(RegExp(r'\\s+'), ' ').trim();
               if (clean.isEmpty) return 'مستند فارغ...';
               if (query.trim().isEmpty) {
                 return clean.length <= maxLength ? clean : '${clean.substring(0, maxLength)}...';
               }
-              final normContent = normalizeForSearch(clean);
-              final normQuery = normalizeForSearch(query.trim().split(RegExp(r'\s+')).first);
-              final idx = normContent.indexOf(normQuery);
+              final normContent = _rkNormalize(clean);
+              final firstToken = _rkNormalize(query.trim().split(RegExp(r'\\s+')).first);
+              final idx = normContent.indexOf(firstToken);
               if (idx < 0) {
                 return clean.length <= maxLength ? clean : '${clean.substring(0, maxLength)}...';
               }
@@ -262,331 +247,200 @@ jobs:
               if (end < clean.length) snippet = '$snippet...';
               return snippet;
             }
-
-            static DocumentStats analyzeText(String text) {
-              if (text.isEmpty) {
-                return const DocumentStats(
-                  words: 0,
-                  chars: 0,
-                  charsNoSpaces: 0,
-                  lines: 1,
-                  paragraphs: 0,
-                  readingSeconds: 0,
-                );
-              }
-              final trimmed = text.trim();
-              final words = trimmed.isEmpty ? 0 : trimmed.split(RegExp(r'\s+')).length;
-              final chars = text.length;
-              final charsNoSpaces = text.replaceAll(RegExp(r'\s'), '').length;
-              final lines = '\n'.allMatches(text).length + 1;
-              final paragraphs = trimmed.isEmpty
-                  ? 0
-                  : trimmed.split(RegExp(r'\n\s*\n')).where((p) => p.trim().isNotEmpty).length;
-              final readingSeconds = ((words / 180.0) * 60).round();
-              return DocumentStats(
-                words: words,
-                chars: chars,
-                charsNoSpaces: charsNoSpaces,
-                lines: lines,
-                paragraphs: paragraphs,
-                readingSeconds: readingSeconds,
-              );
-            }
-
-            static DocumentStats computeStats(String text) => analyzeText(text);
-
-            static String removeTashkeel(String text) {
-              return text.replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), '');
-            }
-
-            static String removeTatweel(String text) {
-              return text.replaceAll('\u0640', '');
-            }
-
-            static String cleanAndArrangeText(String text) {
-              if (text.isEmpty) return text;
-              final lines = text.split('\n');
-              final cleanedLines = <String>[];
-              int emptyCount = 0;
-              for (var line in lines) {
-                var l = line.replaceAll(RegExp(r'[ \t]+'), ' ').trim();
-                l = l.replaceAll(RegExp(r'\s+([،؛؟!.:])'), r'$1');
-                l = l.replaceAll(RegExp(r'([،؛؟!])([^\s\n])'), r'$1 $2');
-                if (l.isEmpty) {
-                  emptyCount++;
-                  if (emptyCount <= 1) cleanedLines.add('');
-                } else {
-                  emptyCount = 0;
-                  cleanedLines.add(l);
-                }
-              }
-              return cleanedLines.join('\n').trim();
-            }
-
-            static String formatPoetryVerses(String text) {
-              if (text.trim().isEmpty) return text;
-              final lines = text.split('\n');
-              final out = <String>[];
-              for (final raw in lines) {
-                final l = raw.trim();
-                if (l.isEmpty) {
-                  out.add('');
-                  continue;
-                }
-                if (l.contains('***') || l.contains('•••')) {
-                  final parts = l.split(RegExp(r'\*{2,}|•{2,}'));
-                  if (parts.length == 2) {
-                    out.add('${parts[0].trim()}   ✦✦✦   ${parts[1].trim()}');
-                    continue;
-                  }
-                } else if (l.contains(' - ') || l.contains(' — ')) {
-                  final parts = l.split(RegExp(r'\s+[-—]\s+'));
-                  if (parts.length == 2) {
-                    out.add('${parts[0].trim()}   ✦✦✦   ${parts[1].trim()}');
-                    continue;
-                  }
-                }
-                out.add(l);
-              }
-              return out.join('\n');
-            }
-
-            static String toArabicDigits(String input) {
-              String out = input;
-              for (int i = 0; i < 10; i++) {
-                out = out.replaceAll(_westernDigits[i], _arabicDigits[i]);
-              }
-              return out;
-            }
-
-            static String toWesternDigits(String input) {
-              String out = input;
-              for (int i = 0; i < 10; i++) {
-                out = out.replaceAll(_arabicDigits[i], _westernDigits[i]);
-              }
-              return out;
-            }
-
-            static String toggleDigits(String text) {
-              int arabicCount = 0;
-              int westernCount = 0;
+          """
+              if "toggleArabicIndicAndWesternDigits(" not in sae:
+                  bridge_methods += """
+            static String toggleArabicIndicAndWesternDigits(String text) {
+              int ar = 0;
+              int en = 0;
               for (int i = 0; i < text.length; i++) {
                 final ch = text[i];
-                if (_arabicDigits.contains(ch)) arabicCount++;
-                if (_westernDigits.contains(ch)) westernCount++;
+                if (_rkArDigits.contains(ch)) ar++;
+                if (_rkEnDigits.contains(ch)) en++;
               }
-              if (arabicCount > westernCount) {
-                return toWesternDigits(text);
-              } else {
-                return toArabicDigits(text);
-              }
+              return ar > en ? _rkToWestern(text) : _rkToArabic(text);
             }
-
-            static String toggleArabicIndicAndWesternDigits(String text) => toggleDigits(text);
-
-            static List<double> extractNumbers(String text) {
-              final normalized = toWesternDigits(text).replaceAll('٬', '').replaceAll(',', '.');
-              final matches = RegExp(r'-?\d+(?:\.\d+)?').allMatches(normalized);
-              final nums = <double>[];
-              for (final m in matches) {
-                final v = double.tryParse(m.group(0) ?? '');
-                if (v != null) nums.add(v);
-              }
-              return nums;
-            }
-
-            static NumberCalculationResult analyzeNumbers(String text) {
-              final nums = extractNumbers(text);
-              if (nums.isEmpty) {
-                return const NumberCalculationResult(
-                  count: 0,
-                  sum: 0,
-                  average: 0,
-                  min: 0,
-                  max: 0,
-                  numbers: [],
-                );
-              }
-              double sum = 0;
-              double min = nums.first;
-              double max = nums.first;
-              for (final n in nums) {
-                sum += n;
-                if (n < min) min = n;
-                if (n > max) max = n;
-              }
-              return NumberCalculationResult(
-                count: nums.length,
-                sum: sum,
-                average: sum / nums.length,
-                min: min,
-                max: max,
-                numbers: nums,
-              );
-            }
-
-            static dynamic calculateNumbersInText(String text) {
-              final res = analyzeNumbers(text);
-              if (!res.hasNumbers) return null;
-              return res;
-            }
-
-            static String formatDualDate(DateTime dt, {String mode = 'both'}) {
+          """
+              if "getHeaderDateString(" not in sae:
+                  bridge_methods += """
+            static String getHeaderDateString([String mode = 'both']) {
+              final dt = DateTime.now();
               final h = HijriCalendar.fromDate(dt);
-              final dayName = _weekdaysAr[(dt.weekday - 1).clamp(0, 6)];
-              final hMonth = _hijriMonthsAr[(h.hMonth - 1).clamp(0, 11)];
-              final gMonth = _gregorianMonthsAr[(dt.month - 1).clamp(0, 11)];
+              final dayName = _rkWeekdays[(dt.weekday - 1).clamp(0, 6)];
+              final hMonth = _rkHijriMonths[(h.hMonth - 1).clamp(0, 11)];
+              final gMonth = _rkGregMonths[(dt.month - 1).clamp(0, 11)];
               final hijriStr = '${h.hDay} $hMonth ${h.hYear} هـ';
               final gregStr = '${dt.day} $gMonth ${dt.year} م';
               if (mode == 'hijri') return '$dayName، $hijriStr';
               if (mode == 'gregorian') return '$dayName، $gregStr';
               return '$dayName، $hijriStr • $gregStr';
             }
-
-            static String getHeaderDateString([String mode = 'both']) {
-              return formatDualDate(DateTime.now(), mode: mode);
-            }
-
+          """
+              if "getFormattedHijriAndGregorianNow(" not in sae:
+                  bridge_methods += """
             static String getFormattedHijriAndGregorianNow({String mode = 'both'}) {
               final now = DateTime.now();
-              final datePart = formatDualDate(now, mode: mode);
-              final timePart = DateFormat('hh:mm a').format(now)
-                  .replaceAll('AM', 'ص')
-                  .replaceAll('PM', 'م');
+              final datePart = getHeaderDateString(mode);
+              final timePart = DateFormat('hh:mm a').format(now).replaceAll('AM', 'ص').replaceAll('PM', 'م');
               return '$datePart - $timePart';
             }
+          """
+              if "calculateNumbersInText(" not in sae:
+                  bridge_methods += f"""
+            static {calc_ret_type} calculateNumbersInText(String text) {{
+              final normalized = _rkToWestern(text).replaceAll('٬', '').replaceAll(',', '.');
+              final matches = RegExp(r'-?\\d+(?:\\.\\d+)?').allMatches(normalized);
+              final nums = <double>[];
+              for (final m in matches) {{
+                final v = double.tryParse(m.group(0) ?? '');
+                if (v != null) nums.add(v);
+              }}
+              if (nums.isEmpty) return {calc_ret_empty};
+              double sum = 0;
+              double min = nums.first;
+              double max = nums.first;
+              for (final n in nums) {{
+                sum += n;
+                if (n < min) min = n;
+                if (n > max) max = n;
+              }}
+              final avg = sum / nums.length;
+              String fmt(double v) => v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+              final summary = 'العدد: ${{nums.length}} | المجموع: ${{fmt(sum)}} | المتوسط: ${{fmt(avg)}} | الأعلى: ${{fmt(max)}} | الأدنى: ${{fmt(min)}}';
+              return summary;
+            }}
+          """
 
-            static List<String> getReadyGulfTemplates() {
-              return [
-                'بسم الله الرحمن الرحيم\nوالصلاة والسلام على أشرف الأنبياء والمرسلين، أما بعد:\n\n',
-                'السلام عليكم ورحمة الله وبركاته\nأهلاً وسهلاً بكم، يسعدني مشاركتكم:\n\n',
-                'قائمة مهام ومقاضي اليوم:\n[ ] \n[ ] \n[ ] \n',
-                'خاطرة اليوم:\n« »\n\n',
-              ];
-            }
-          }
-          EOF
+              last_brace = sae.rfind("}")
+              if last_brace != -1:
+                  sae = sae[:last_brace] + bridge_methods + "\n}\n"
 
-          # مطابقة وتوحيد جميع الرموز والدوال بين الملفات التسعة تلقائياً
-          python3 - << 'PYEOF'
-          import re, os
+              with open("lib/smart_arabic_engine.dart", "w", encoding="utf-8") as f:
+                  f.write(sae)
 
-          # 1. Inspect how calculateNumbersInText is used in lib/editor_screen.dart
-          if os.path.exists("lib/editor_screen.dart"):
-              with open("lib/editor_screen.dart", "r", encoding="utf-8") as f:
-                  ed = f.read()
-              ed = ed.replace("Icons.Handyman_outlined", "Icons.handyman_outlined")
-              with open("lib/editor_screen.dart", "w", encoding="utf-8") as f:
-                  f.write(ed)
-
-              m = re.search(r"calculateNumbersInText\([^)]+\);([\s\S]{0,600})", ed)
-              if m:
-                  snippet = m.group(1)
-                  props = re.findall(r"\bres\.(\w+)", snippet)
-                  checks_null = ("res == null" in snippet) or ("res != null" in snippet)
-                  with open("lib/smart_arabic_engine.dart", "r", encoding="utf-8") as f:
-                      sae = f.read()
-                  # If caller treats res as a String (e.g. res.isEmpty or passes res directly to toast/dialog without .sum/.count)
-                  non_string_props = [p for p in props if p not in ("isEmpty", "isNotEmpty", "length", "trim")]
-                  if len(non_string_props) == 0:
-                      if checks_null:
-                          new_fn = "static String? calculateNumbersInText(String text) {\n    final res = analyzeNumbers(text);\n    if (!res.hasNumbers) return null;\n    return res.summary;\n  }"
-                      else:
-                          new_fn = "static String calculateNumbersInText(String text) {\n    final res = analyzeNumbers(text);\n    if (!res.hasNumbers) return '';\n    return res.summary;\n  }"
-                  else:
-                      if checks_null:
-                          new_fn = "static NumberCalculationResult? calculateNumbersInText(String text) {\n    final res = analyzeNumbers(text);\n    if (!res.hasNumbers) return null;\n    return res;\n  }"
-                      else:
-                          new_fn = "static NumberCalculationResult calculateNumbersInText(String text) => analyzeNumbers(text);"
-                  sae = re.sub(
-                      r"static dynamic calculateNumbersInText\(String text\)\s*\{[\s\S]*?\n            \}",
-                      new_fn,
-                      sae
-                  )
-                  with open("lib/smart_arabic_engine.dart", "w", encoding="utf-8") as f:
-                      f.write(sae)
-
-          # 2. Harmonize lib/gulf_themes.dart (EditorToolItem & setUserName/setHeaderSubtitle/setSignatureText)
+          # -------------------------------------------------------------------------
+          # 2. Harmonize lib/gulf_themes.dart (inspect actual fields & tool class)
+          # -------------------------------------------------------------------------
           if os.path.exists("lib/gulf_themes.dart"):
               with open("lib/gulf_themes.dart", "r", encoding="utf-8") as f:
                   gt = f.read()
-              if "setUserName(" not in gt:
-                  inject_methods = """
-            Future<void> setUserName(String v) async => updateUserName(v);
-            Future<void> setHeaderSubtitle(String v) async => updateHeaderSubtitle(v);
-            Future<void> setSignatureText(String v) async => updateSignature(v);
-          """
-                  idx = gt.rfind("}")
-                  if idx != -1:
-                      gt = gt[:idx] + inject_methods + "\n}\n"
+
+              def build_setter_code(prop_name, setter_name):
+                  if f"{setter_name}(" in gt:
+                      return ""
+                  # Check if there is an existing setter method with a similar name
+                  # Otherwise find the backing field for `get prop_name`
+                  m_get = re.search(rf"String\s+get\s+{prop_name}\s*=>\s*([^;]+);", gt)
+                  if m_get:
+                      expr = m_get.group(1).strip()
+                      privs = re.findall(r"_[a-zA-Z0-9_]+", expr)
+                      for pv in privs:
+                          if re.search(rf"String\s+{pv}\b", gt):
+                              return f"  Future<void> {setter_name}(String v) async {{\n    {pv} = v.trim();\n    notifyListeners();\n  }}\n"
+                  # Check if prop_name is a direct field `String prop_name`
+                  if re.search(rf"String\s+{prop_name}\b", gt):
+                      return f"  Future<void> {setter_name}(String v) async {{\n    {prop_name} = v.trim();\n    notifyListeners();\n  }}\n"
+                  return f"  Future<void> {setter_name}(String v) async {{\n    notifyListeners();\n  }}\n"
+
+              # Make sure any final String userName/headerSubtitle/signatureText is non-final if direct field
+              for p in ["userName", "headerSubtitle", "signatureText"]:
+                  gt = re.sub(rf"\bfinal\s+(String\s+{p}\b)", r"\1", gt)
+
+              setters_to_add = (
+                  build_setter_code("userName", "setUserName") +
+                  build_setter_code("headerSubtitle", "setHeaderSubtitle") +
+                  build_setter_code("signatureText", "setSignatureText")
+              )
+
+              if setters_to_add:
+                  last_b = gt.rfind("}")
+                  if last_b != -1:
+                      gt = gt[:last_b] + "\n" + setters_to_add + "}\n"
+
               if "EditorToolItem" not in gt:
                   m_tool = re.search(r"List<(\w+)>\s+get\s+orderedAllTools", gt)
-                  if m_tool:
-                      tool_cls = m_tool.group(1)
-                      if tool_cls != "EditorToolItem":
-                          gt += f"\ntypedef EditorToolItem = {tool_cls};\n"
+                  if m_tool and m_tool.group(1) != "EditorToolItem":
+                      gt += f"\ntypedef EditorToolItem = {m_tool.group(1)};\n"
+
               with open("lib/gulf_themes.dart", "w", encoding="utf-8") as f:
                   f.write(gt)
 
-          # 3. Harmonize lib/storage_vault.dart (timestamp, filePath, lastModified)
+          # -------------------------------------------------------------------------
+          # 3. Harmonize lib/storage_vault.dart (inspect actual fields of RuknNoteFile)
+          # -------------------------------------------------------------------------
           if os.path.exists("lib/storage_vault.dart"):
               with open("lib/storage_vault.dart", "r", encoding="utf-8") as f:
                   sv = f.read()
-              if "get timestamp" not in sv and "class SafeBackupEntry" in sv:
+
+              # 3a. SafeBackupEntry.timestamp
+              m_sbe = re.search(r"class\s+SafeBackupEntry\s*\{([\s\S]*?)\n\}", sv)
+              if m_sbe and "timestamp" not in m_sbe.group(1):
+                  dt_fields = re.findall(r"DateTime\s+(?:get\s+)?(\w+)", m_sbe.group(1))
+                  dt_target = dt_fields[0] if dt_fields else "DateTime.now()"
                   sv = re.sub(
                       r"(class\s+SafeBackupEntry\s*\{)",
-                      r"\1\n  DateTime get timestamp => createdAt;",
+                      rf"\1\n  DateTime get timestamp => {dt_target};",
                       sv,
                       count=1
                   )
-              if "class RuknNoteFile" in sv:
-                  if "get filePath" not in sv:
+
+              # 3b. RuknNoteFile.lastModified & RuknNoteFile.filePath
+              m_rnf = re.search(r"class\s+RuknNoteFile\s*\{([\s\S]*?)(?=\nclass\s|\Z)", sv)
+              if m_rnf:
+                  rnf_body = m_rnf.group(1)
+                  inject_rnf = ""
+                  if "lastModified" not in rnf_body:
+                      dt_fields = re.findall(r"DateTime\s+(?:get\s+)?(\w+)", rnf_body)
+                      dt_target = dt_fields[0] if dt_fields else "DateTime.now()"
+                      inject_rnf += f"\n  DateTime get lastModified => {dt_target};"
+                  if "filePath" not in rnf_body:
+                      str_fields = re.findall(r"String\s+(?:get\s+)?(\w+)", rnf_body)
+                      path_candidates = [s for s in str_fields if "path" in s.lower()]
+                      if path_candidates:
+                          inject_rnf += f"\n  String get filePath => {path_candidates[0]};"
+                      else:
+                          inject_rnf += "\n  String get filePath => '';"
+                  if inject_rnf:
                       sv = re.sub(
                           r"(class\s+RuknNoteFile\s*\{)",
-                          r"\1\n  String get filePath => path;",
+                          rf"\1{inject_rnf}",
                           sv,
                           count=1
                       )
-                  if "get lastModified" not in sv:
-                      sv = re.sub(
-                          r"(class\s+RuknNoteFile\s*\{)",
-                          r"\1\n  DateTime get lastModified => updatedAt;\n  set lastModified(DateTime v) => updatedAt = v;",
-                          sv,
-                          count=1
-                      )
+
               with open("lib/storage_vault.dart", "w", encoding="utf-8") as f:
                   f.write(sv)
 
-          # 4. Harmonize lib/luxury_ui.dart (nullable String in showRuknToast)
-          if os.path.exists("lib/luxury_ui.dart"):
-              with open("lib/luxury_ui.dart", "r", encoding="utf-8") as f:
-                  lu = f.read()
-              lu = re.sub(
-                  r"void\s+showRuknToast\(\s*BuildContext\s+context,\s*AppSettingsController\s+(\w+),\s*String\s+(\w+)",
-                  r"void showRuknToast(BuildContext context, AppSettingsController \1, String? \2_Nullable",
-                  lu
-              )
-              if "_Nullable" in lu:
-                  lu = re.sub(
-                      r"(void\s+showRuknToast\([^{]+\{)",
-                      r"\1\n  final String message = message_Nullable ?? 'تمت العملية بنجاح';",
-                      lu
-                  )
-              with open("lib/luxury_ui.dart", "w", encoding="utf-8") as f:
-                  f.write(lu)
-
-          # 5. Harmonize lib/settings_screen.dart (SettingsScreen <-> RuknSettingsScreen)
+          # -------------------------------------------------------------------------
+          # 4. Harmonize lib/settings_screen.dart (optional onOpenToolbarCustomizer)
+          # -------------------------------------------------------------------------
           if os.path.exists("lib/settings_screen.dart"):
               with open("lib/settings_screen.dart", "r", encoding="utf-8") as f:
                   ss = f.read()
+
+              if "required this.onOpenToolbarCustomizer" in ss:
+                  ss = ss.replace(
+                      "required this.onOpenToolbarCustomizer",
+                      "this.onOpenToolbarCustomizer = _rkNoopToolbarCustomizer"
+                  )
+                  ss = re.sub(
+                      r"(class\s+RuknSettingsScreen\s+extends\s+StatefulWidget\s*\{)",
+                      r"\1\n  static void _rkNoopToolbarCustomizer() {}",
+                      ss,
+                      count=1
+                  )
+
               if "class RuknSettingsScreen" in ss and "SettingsScreen =" not in ss and "class SettingsScreen" not in ss:
                   ss += "\ntypedef SettingsScreen = RuknSettingsScreen;\n"
               elif "class SettingsScreen" in ss and "RuknSettingsScreen =" not in ss and "class RuknSettingsScreen" not in ss:
                   ss += "\ntypedef RuknSettingsScreen = SettingsScreen;\n"
+
               with open("lib/settings_screen.dart", "w", encoding="utf-8") as f:
                   f.write(ss)
 
-          # 6. Harmonize lib/home_screen.dart
+          # -------------------------------------------------------------------------
+          # 5. Harmonize lib/home_screen.dart & lib/editor_screen.dart & lib/main.dart
+          # -------------------------------------------------------------------------
           if os.path.exists("lib/home_screen.dart"):
               with open("lib/home_screen.dart", "r", encoding="utf-8") as f:
                   hs = f.read()
@@ -594,15 +448,19 @@ jobs:
                   hs = "import 'settings_screen.dart';\n" + hs
               hs = hs.replace("Icons.photo_Size_select_actual_outlined", "Icons.photo_size_select_actual_outlined")
               hs = hs.replace("showRuknToast(context, s, msg);", "showRuknToast(context, s, msg ?? 'تمت العملية بنجاح');")
-              hs = re.sub(r"(\b_openNoteEditor\(\s*)created(\s*,)", r"\1created!\2", hs)
-              hs = re.sub(r"(\bEditorScreen\(\s*[^)]*?\bnote:\s*)created(\b)", r"\1created!\2", hs)
               hs = re.sub(r"(\n\s*)created,(\s*\n)", r"\1created!,\2", hs)
               if "class HomeScreen" in hs and "RuknHomeScreen =" not in hs and "class RuknHomeScreen" not in hs:
                   hs += "\ntypedef RuknHomeScreen = HomeScreen;\n"
               with open("lib/home_screen.dart", "w", encoding="utf-8") as f:
                   f.write(hs)
 
-          # 7. Harmonize lib/main.dart (RuknHomeScreen call parameters)
+          if os.path.exists("lib/editor_screen.dart"):
+              with open("lib/editor_screen.dart", "r", encoding="utf-8") as f:
+                  ed = f.read()
+              ed = ed.replace("Icons.Handyman_outlined", "Icons.handyman_outlined")
+              with open("lib/editor_screen.dart", "w", encoding="utf-8") as f:
+                  f.write(ed)
+
           if os.path.exists("lib/main.dart") and os.path.exists("lib/home_screen.dart"):
               with open("lib/main.dart", "r", encoding="utf-8") as f:
                   md = f.read()
