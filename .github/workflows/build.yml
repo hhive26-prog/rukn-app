@@ -148,28 +148,68 @@ jobs:
                       count=1
                   )
 
-              # 1b. Determine how calculateNumbersInText is used in lib/editor_screen.dart
-              calc_ret_type = "String?"
-              calc_ret_empty = "null"
-              calc_ret_val = "summary"
+              # 1b. Add RkNumberCalcResult helper class if not present
+              if "class RkNumberCalcResult" not in sae:
+                  calc_cls = '''
+          class RkNumberCalcResult {
+            final int count;
+            final double sum;
+            final double average;
+            final double min;
+            final double max;
+            final List<double> numbers;
+
+            const RkNumberCalcResult({
+              required this.count,
+              required this.sum,
+              required this.average,
+              required this.min,
+              required this.max,
+              required this.numbers,
+            });
+
+            bool get hasNumbers => count > 0;
+            bool get isEmpty => count == 0;
+            bool get isNotEmpty => count > 0;
+
+            static String _fmt(double v) => v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+
+            String get formattedSum => _fmt(sum);
+            String get formattedAverage => _fmt(average);
+            String get formattedMin => _fmt(min);
+            String get formattedMax => _fmt(max);
+
+            String get summary => count == 0
+                ? 'لا توجد أرقام في النص المحدد'
+                : 'العدد: ' + count.toString() + ' | المجموع: ' + formattedSum + ' | المتوسط: ' + formattedAverage + ' | الأعلى: ' + formattedMax + ' | الأدنى: ' + formattedMin;
+
+            String get report => summary;
+            String get formatted => summary;
+            String get text => summary;
+
+            @override
+            String toString() => summary;
+          }
+          '''
+                  sae = sae + "\n" + calc_cls
+
+              # 1c. Determine how calculateNumbersInText is used in lib/editor_screen.dart
+              use_string_return = True
+              checks_null = True
               if os.path.exists("lib/editor_screen.dart"):
                   with open("lib/editor_screen.dart", "r", encoding="utf-8") as fed:
                       ed_src = fed.read()
-                  m_calc = re.search(r"calculateNumbersInText\([^)]+\);([\s\S]{0,500})", ed_src)
+                  m_calc = re.search(r"calculateNumbersInText\([^)]+\);([\s\S]{0,600})", ed_src)
                   if m_calc:
                       snip = m_calc.group(1)
                       props = re.findall(r"\bres\.(\w+)", snip)
                       checks_null = ("res == null" in snip) or ("res != null" in snip)
                       non_str = [p for p in props if p not in ("isEmpty", "isNotEmpty", "length", "trim")]
-                      if len(non_str) == 0:
-                          if not checks_null:
-                              calc_ret_type = "String"
-                              calc_ret_empty = "''"
-                      else:
-                          calc_ret_type = "dynamic"
+                      if len(non_str) > 0:
+                          use_string_return = False
 
-              # 1c. Inject self-contained missing static methods into SmartArabicEngine
-              bridge_methods = f"""
+              # 1d. Inject missing static methods into SmartArabicEngine
+              bridge_methods = '''
             static const List<String> _rkArDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
             static const List<String> _rkEnDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
             static const List<String> _rkHijriMonths = [
@@ -185,23 +225,23 @@ jobs:
               'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد',
             ];
 
-            static String _rkToWestern(String input) {{
+            static String _rkToWestern(String input) {
               String out = input;
-              for (int i = 0; i < 10; i++) {{
+              for (int i = 0; i < 10; i++) {
                 out = out.replaceAll(_rkArDigits[i], _rkEnDigits[i]);
-              }}
+              }
               return out;
-            }}
+            }
 
-            static String _rkToArabic(String input) {{
+            static String _rkToArabic(String input) {
               String out = input;
-              for (int i = 0; i < 10; i++) {{
+              for (int i = 0; i < 10; i++) {
                 out = out.replaceAll(_rkEnDigits[i], _rkArDigits[i]);
-              }}
+              }
               return out;
-            }}
+            }
 
-            static String _rkNormalize(String input) {{
+            static String _rkNormalize(String input) {
               if (input.isEmpty) return '';
               String s = input.toLowerCase();
               s = s.replaceAll(RegExp(r'[\\u064B-\\u065F\\u0670\\u0640]'), '');
@@ -211,10 +251,39 @@ jobs:
               s = s.replaceAll('ؤ', 'و');
               s = s.replaceAll('ئ', 'ي');
               return _rkToWestern(s).trim();
-            }}
-          """
+            }
+
+            static RkNumberCalcResult _rkAnalyzeNums(String text) {
+              final normalized = _rkToWestern(text).replaceAll('٬', '').replaceAll(',', '.');
+              final matches = RegExp(r'-?\\d+(?:\\.\\d+)?').allMatches(normalized);
+              final nums = <double>[];
+              for (final m in matches) {
+                final v = double.tryParse(m.group(0) ?? '');
+                if (v != null) nums.add(v);
+              }
+              if (nums.isEmpty) {
+                return const RkNumberCalcResult(count: 0, sum: 0, average: 0, min: 0, max: 0, numbers: []);
+              }
+              double sum = 0;
+              double min = nums.first;
+              double max = nums.first;
+              for (final n in nums) {
+                sum += n;
+                if (n < min) min = n;
+                if (n > max) max = n;
+              }
+              return RkNumberCalcResult(
+                count: nums.length,
+                sum: sum,
+                average: sum / nums.length,
+                min: min,
+                max: max,
+                numbers: nums,
+              );
+            }
+          '''
               if "containsSmartMatch(" not in sae:
-                  bridge_methods += """
+                  bridge_methods += '''
             static bool containsSmartMatch(String text, String query) {
               if (query.trim().isEmpty) return true;
               final normText = _rkNormalize(text);
@@ -225,31 +294,31 @@ jobs:
               }
               return true;
             }
-          """
+          '''
               if "extractSearchSnippet(" not in sae:
-                  bridge_methods += """
+                  bridge_methods += '''
             static String extractSearchSnippet(String content, String query, {int maxLength = 110}) {
               final clean = content.replaceAll(RegExp(r'\\s+'), ' ').trim();
               if (clean.isEmpty) return 'مستند فارغ...';
               if (query.trim().isEmpty) {
-                return clean.length <= maxLength ? clean : '${clean.substring(0, maxLength)}...';
+                return clean.length <= maxLength ? clean : clean.substring(0, maxLength) + '...';
               }
               final normContent = _rkNormalize(clean);
               final firstToken = _rkNormalize(query.trim().split(RegExp(r'\\s+')).first);
               final idx = normContent.indexOf(firstToken);
               if (idx < 0) {
-                return clean.length <= maxLength ? clean : '${clean.substring(0, maxLength)}...';
+                return clean.length <= maxLength ? clean : clean.substring(0, maxLength) + '...';
               }
               final start = (idx - 25).clamp(0, clean.length);
               final end = (start + maxLength).clamp(0, clean.length);
               String snippet = clean.substring(start, end);
-              if (start > 0) snippet = '...$snippet';
-              if (end < clean.length) snippet = '$snippet...';
+              if (start > 0) snippet = '...' + snippet;
+              if (end < clean.length) snippet = snippet + '...';
               return snippet;
             }
-          """
+          '''
               if "toggleArabicIndicAndWesternDigits(" not in sae:
-                  bridge_methods += """
+                  bridge_methods += '''
             static String toggleArabicIndicAndWesternDigits(String text) {
               int ar = 0;
               int en = 0;
@@ -260,60 +329,68 @@ jobs:
               }
               return ar > en ? _rkToWestern(text) : _rkToArabic(text);
             }
-          """
+          '''
               if "getHeaderDateString(" not in sae:
-                  bridge_methods += """
+                  bridge_methods += '''
             static String getHeaderDateString([String mode = 'both']) {
               final dt = DateTime.now();
               final h = HijriCalendar.fromDate(dt);
               final dayName = _rkWeekdays[(dt.weekday - 1).clamp(0, 6)];
               final hMonth = _rkHijriMonths[(h.hMonth - 1).clamp(0, 11)];
               final gMonth = _rkGregMonths[(dt.month - 1).clamp(0, 11)];
-              final hijriStr = '${h.hDay} $hMonth ${h.hYear} هـ';
-              final gregStr = '${dt.day} $gMonth ${dt.year} م';
-              if (mode == 'hijri') return '$dayName، $hijriStr';
-              if (mode == 'gregorian') return '$dayName، $gregStr';
-              return '$dayName، $hijriStr • $gregStr';
+              final hijriStr = h.hDay.toString() + ' ' + hMonth + ' ' + h.hYear.toString() + ' هـ';
+              final gregStr = dt.day.toString() + ' ' + gMonth + ' ' + dt.year.toString() + ' م';
+              if (mode == 'hijri') return dayName + '، ' + hijriStr;
+              if (mode == 'gregorian') return dayName + '، ' + gregStr;
+              return dayName + '، ' + hijriStr + ' • ' + gregStr;
             }
-          """
+          '''
               if "getFormattedHijriAndGregorianNow(" not in sae:
-                  bridge_methods += """
+                  bridge_methods += '''
             static String getFormattedHijriAndGregorianNow({String mode = 'both'}) {
               final now = DateTime.now();
               final datePart = getHeaderDateString(mode);
               final timePart = DateFormat('hh:mm a').format(now).replaceAll('AM', 'ص').replaceAll('PM', 'م');
-              return '$datePart - $timePart';
+              return datePart + ' - ' + timePart;
             }
-          """
+          '''
               if "calculateNumbersInText(" not in sae:
-                  bridge_methods += f"""
-            static {calc_ret_type} calculateNumbersInText(String text) {{
-              final normalized = _rkToWestern(text).replaceAll('٬', '').replaceAll(',', '.');
-              final matches = RegExp(r'-?\\d+(?:\\.\\d+)?').allMatches(normalized);
-              final nums = <double>[];
-              for (final m in matches) {{
-                final v = double.tryParse(m.group(0) ?? '');
-                if (v != null) nums.add(v);
-              }}
-              if (nums.isEmpty) return {calc_ret_empty};
-              double sum = 0;
-              double min = nums.first;
-              double max = nums.first;
-              for (final n in nums) {{
-                sum += n;
-                if (n < min) min = n;
-                if (n > max) max = n;
-              }}
-              final avg = sum / nums.length;
-              String fmt(double v) => v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
-              final summary = 'العدد: ${{nums.length}} | المجموع: ${{fmt(sum)}} | المتوسط: ${{fmt(avg)}} | الأعلى: ${{fmt(max)}} | الأدنى: ${{fmt(min)}}';
-              return summary;
-            }}
-          """
+                  if use_string_return:
+                      if checks_null:
+                          bridge_methods += '''
+            static String? calculateNumbersInText(String text) {
+              final r = _rkAnalyzeNums(text);
+              if (!r.hasNumbers) return null;
+              return r.summary;
+            }
+          '''
+                      else:
+                          bridge_methods += '''
+            static String calculateNumbersInText(String text) {
+              final r = _rkAnalyzeNums(text);
+              if (!r.hasNumbers) return '';
+              return r.summary;
+            }
+          '''
+                  else:
+                      if checks_null:
+                          bridge_methods += '''
+            static RkNumberCalcResult? calculateNumbersInText(String text) {
+              final r = _rkAnalyzeNums(text);
+              if (!r.hasNumbers) return null;
+              return r;
+            }
+          '''
+                      else:
+                          bridge_methods += '''
+            static RkNumberCalcResult calculateNumbersInText(String text) => _rkAnalyzeNums(text);
+          '''
 
-              last_brace = sae.rfind("}")
-              if last_brace != -1:
-                  sae = sae[:last_brace] + bridge_methods + "\n}\n"
+              # Insert bridge_methods inside SmartArabicEngine class
+              m_engine = re.search(r"class\s+SmartArabicEngine\s*\{", sae)
+              if m_engine:
+                  insert_pos = m_engine.end()
+                  sae = sae[:insert_pos] + "\n" + bridge_methods + "\n" + sae[insert_pos:]
 
               with open("lib/smart_arabic_engine.dart", "w", encoding="utf-8") as f:
                   f.write(sae)
@@ -325,11 +402,15 @@ jobs:
               with open("lib/gulf_themes.dart", "r", encoding="utf-8") as f:
                   gt = f.read()
 
+              for p in ["userName", "headerSubtitle", "signatureText"]:
+                  gt = re.sub(rf"\bfinal\s+(String\s+{p}\b)", r"\1", gt)
+
               def build_setter_code(prop_name, setter_name):
                   if f"{setter_name}(" in gt:
                       return ""
-                  # Check if there is an existing setter method with a similar name
-                  # Otherwise find the backing field for `get prop_name`
+                  priv_name = "_" + prop_name
+                  if re.search(rf"String\s+{priv_name}\b", gt):
+                      return f"  Future<void> {setter_name}(String v) async {{\n    {priv_name} = v.trim();\n    notifyListeners();\n  }}\n"
                   m_get = re.search(rf"String\s+get\s+{prop_name}\s*=>\s*([^;]+);", gt)
                   if m_get:
                       expr = m_get.group(1).strip()
@@ -337,14 +418,9 @@ jobs:
                       for pv in privs:
                           if re.search(rf"String\s+{pv}\b", gt):
                               return f"  Future<void> {setter_name}(String v) async {{\n    {pv} = v.trim();\n    notifyListeners();\n  }}\n"
-                  # Check if prop_name is a direct field `String prop_name`
                   if re.search(rf"String\s+{prop_name}\b", gt):
                       return f"  Future<void> {setter_name}(String v) async {{\n    {prop_name} = v.trim();\n    notifyListeners();\n  }}\n"
                   return f"  Future<void> {setter_name}(String v) async {{\n    notifyListeners();\n  }}\n"
-
-              # Make sure any final String userName/headerSubtitle/signatureText is non-final if direct field
-              for p in ["userName", "headerSubtitle", "signatureText"]:
-                  gt = re.sub(rf"\bfinal\s+(String\s+{p}\b)", r"\1", gt)
 
               setters_to_add = (
                   build_setter_code("userName", "setUserName") +
@@ -372,7 +448,6 @@ jobs:
               with open("lib/storage_vault.dart", "r", encoding="utf-8") as f:
                   sv = f.read()
 
-              # 3a. SafeBackupEntry.timestamp
               m_sbe = re.search(r"class\s+SafeBackupEntry\s*\{([\s\S]*?)\n\}", sv)
               if m_sbe and "timestamp" not in m_sbe.group(1):
                   dt_fields = re.findall(r"DateTime\s+(?:get\s+)?(\w+)", m_sbe.group(1))
@@ -384,7 +459,6 @@ jobs:
                       count=1
                   )
 
-              # 3b. RuknNoteFile.lastModified & RuknNoteFile.filePath
               m_rnf = re.search(r"class\s+RuknNoteFile\s*\{([\s\S]*?)(?=\nclass\s|\Z)", sv)
               if m_rnf:
                   rnf_body = m_rnf.group(1)
@@ -412,23 +486,11 @@ jobs:
                   f.write(sv)
 
           # -------------------------------------------------------------------------
-          # 4. Harmonize lib/settings_screen.dart (optional onOpenToolbarCustomizer)
+          # 4. Harmonize lib/settings_screen.dart & lib/home_screen.dart
           # -------------------------------------------------------------------------
           if os.path.exists("lib/settings_screen.dart"):
               with open("lib/settings_screen.dart", "r", encoding="utf-8") as f:
                   ss = f.read()
-
-              if "required this.onOpenToolbarCustomizer" in ss:
-                  ss = ss.replace(
-                      "required this.onOpenToolbarCustomizer",
-                      "this.onOpenToolbarCustomizer = _rkNoopToolbarCustomizer"
-                  )
-                  ss = re.sub(
-                      r"(class\s+RuknSettingsScreen\s+extends\s+StatefulWidget\s*\{)",
-                      r"\1\n  static void _rkNoopToolbarCustomizer() {}",
-                      ss,
-                      count=1
-                  )
 
               if "class RuknSettingsScreen" in ss and "SettingsScreen =" not in ss and "class SettingsScreen" not in ss:
                   ss += "\ntypedef SettingsScreen = RuknSettingsScreen;\n"
@@ -438,9 +500,6 @@ jobs:
               with open("lib/settings_screen.dart", "w", encoding="utf-8") as f:
                   f.write(ss)
 
-          # -------------------------------------------------------------------------
-          # 5. Harmonize lib/home_screen.dart & lib/editor_screen.dart & lib/main.dart
-          # -------------------------------------------------------------------------
           if os.path.exists("lib/home_screen.dart"):
               with open("lib/home_screen.dart", "r", encoding="utf-8") as f:
                   hs = f.read()
@@ -449,6 +508,18 @@ jobs:
               hs = hs.replace("Icons.photo_Size_select_actual_outlined", "Icons.photo_size_select_actual_outlined")
               hs = hs.replace("showRuknToast(context, s, msg);", "showRuknToast(context, s, msg ?? 'تمت العملية بنجاح');")
               hs = re.sub(r"(\n\s*)created,(\s*\n)", r"\1created!,\2", hs)
+
+              # If SettingsScreen in settings_screen.dart requires onOpenToolbarCustomizer, pass a no-op callback
+              if os.path.exists("lib/settings_screen.dart"):
+                  with open("lib/settings_screen.dart", "r", encoding="utf-8") as fss:
+                      ss_content = fss.read()
+                  if "onOpenToolbarCustomizer" in ss_content:
+                      hs = re.sub(
+                          r"SettingsScreen\(\s*settings:\s*s\s*\)",
+                          "SettingsScreen(settings: s, onOpenToolbarCustomizer: () {})",
+                          hs
+                      )
+
               if "class HomeScreen" in hs and "RuknHomeScreen =" not in hs and "class RuknHomeScreen" not in hs:
                   hs += "\ntypedef RuknHomeScreen = HomeScreen;\n"
               with open("lib/home_screen.dart", "w", encoding="utf-8") as f:
