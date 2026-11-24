@@ -1,0 +1,330 @@
+name: Build Rukn Luxury App APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Flutter Stable
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Organize Dart Files & Clean Markdown Backticks
+        run: |
+          mkdir -p lib
+          for f in main.dart gulf_themes.dart luxury_ui.dart storage_vault.dart smart_arabic_engine.dart share_card_studio.dart home_screen.dart editor_screen.dart settings_screen.dart; do
+            if [ -f "$f" ]; then
+              cp "$f" "lib/$f"
+            fi
+          done
+          find lib -name "*.dart" -type f -exec sed -i '/^\x60/d' {} +
+          if [ -f "pubspec.yaml" ]; then
+            sed -i '/^\x60/d' pubspec.yaml
+          fi
+
+      - name: Generate Android Platform Scaffolding
+        run: |
+          cp pubspec.yaml pubspec.yaml.bak
+          cp -r lib lib_bak
+          flutter create --org com.rukn --project-name rukn_app --platforms=android .
+          cp pubspec.yaml.bak pubspec.yaml
+          cp -r lib_bak/* lib/
+          rm -rf pubspec.yaml.bak lib_bak
+
+      - name: Download & Prepare 10 Luxury Arabic Fonts
+        run: |
+          mkdir -p assets/fonts
+          download_font() {
+            local url="$1"
+            local out="assets/fonts/$2"
+            curl -L --fail --silent --show-error "$url" -o "$out" || true
+            if [ ! -s "$out" ]; then
+              cp "${FLUTTER_ROOT}/bin/cache/artifacts/material_fonts/Roboto-Regular.ttf" "$out"
+            fi
+          }
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Regular.ttf" "tajawal_regular.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Bold.ttf" "tajawal_bold.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-Regular.ttf" "almarai_regular.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/almarai/Almarai-Bold.ttf" "almarai_bold.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/scheherazadenew/ScheherazadeNew-Regular.ttf" "scheherazade_regular.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/scheherazadenew/ScheherazadeNew-Bold.ttf" "scheherazade_bold.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/readexpro/ReadexPro%5BHEXP%2Cwght%5D.ttf" "readex_pro.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf" "noto_sans_arabic.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf" "noto_naskh_arabic.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Regular.ttf" "ibm_plex_arabic.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Bold.ttf" "ibm_plex_arabic_bold.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Regular.ttf" "aref_ruqaa.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/arefruqaa/ArefRuqaa-Bold.ttf" "aref_ruqaa_bold.ttf"
+          download_font "https://raw.githubusercontent.com/google/fonts/main/ofl/reemkufi/ReemKufi%5Bwght%5D.ttf" "reem_kufi.ttf"
+
+      - name: Restore or Generate Fixed Signing Keystore for Rukn
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/rukn_fixed.keystore
+          key: rukn-fixed-signing-keystore-permanent-v1
+
+      - name: Create Keystore If Not Cached
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/rukn_fixed.keystore ]; then
+            keytool -genkey -v \
+              -keystore ~/.android/rukn_fixed.keystore \
+              -alias rukn_key \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 36500 \
+              -storepass rukn123456 \
+              -keypass rukn123456 \
+              -dname "CN=Rukn App, OU=Gulf Luxury Apps, O=Rukn, L=Riyadh, S=Riyadh, C=SA"
+          fi
+          cp ~/.android/rukn_fixed.keystore android/app/rukn_fixed.keystore
+
+      - name: Configure Native Android Bridge, Royal Icon & Gradle Signing
+        run: |
+          mkdir -p android/app/src/main/kotlin/com/rukn/rukn_app
+          cat << 'EOF' > android/app/src/main/kotlin/com/rukn/rukn_app/MainActivity.kt
+          package com.rukn.rukn_app
+
+          import android.app.KeyguardManager
+          import android.content.ContentValues
+          import android.content.Context
+          import android.os.Build
+          import android.os.Environment
+          import android.provider.MediaStore
+          import android.view.WindowManager
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+          import java.io.File
+          import java.io.FileOutputStream
+
+          class MainActivity: FlutterActivity() {
+              private val CHANNEL = "com.rukn.app/native"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+                      when (call.method) {
+                          "setKeepScreenOn" -> {
+                              val enable = call.argument<Boolean>("enable") ?: false
+                              runOnUiThread {
+                                  if (enable) {
+                                      window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                                  } else {
+                                      window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                                  }
+                              }
+                              result.success(true)
+                          }
+                          "isDeviceSecure" -> {
+                              val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                              result.success(km.isKeyguardSecure)
+                          }
+                          "saveToDownloads" -> {
+                              try {
+                                  val fileName = call.argument<String>("fileName") ?: "rukn_file.txt"
+                                  val bytes = call.argument<ByteArray>("bytes") ?: ByteArray(0)
+                                  val mimeType = call.argument<String>("mimeType") ?: "text/plain"
+                                  val savedPath = saveFileToPublicDownloads(fileName, bytes, mimeType)
+                                  result.success(savedPath)
+                              } catch (e: Exception) {
+                                  result.error("SAVE_ERR", e.message, null)
+                              }
+                          }
+                          else -> result.notImplemented()
+                      }
+                  }
+              }
+
+              private fun saveFileToPublicDownloads(fileName: String, bytes: ByteArray, mimeType: String): String {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      val resolver = applicationContext.contentResolver
+                      val contentValues = ContentValues().apply {
+                          put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                          put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                          put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Rukn_ركن")
+                      }
+                      val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                      if (uri != null) {
+                          resolver.openOutputStream(uri)?.use { out ->
+                              out.write(bytes)
+                              out.flush()
+                          }
+                          return "Download/Rukn_ركن/$fileName"
+                      }
+                  }
+                  val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Rukn_ركن")
+                  if (!dir.exists()) dir.mkdirs()
+                  val file = File(dir, fileName)
+                  FileOutputStream(file).use { out ->
+                      out.write(bytes)
+                      out.flush()
+                  }
+                  return file.absolutePath
+              }
+          }
+          EOF
+
+          mkdir -p android/app/src/main/res/drawable
+          cat << 'EOF' > android/app/src/main/res/drawable/rukn_luxury_icon.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#0B132B"
+                  android:pathData="M0,0h108v108h-108z"/>
+              <path
+                  android:fillColor="#14213D"
+                  android:pathData="M18,18 C18,13.58 21.58,10 26,10 L82,10 C86.42,10 90,13.58 90,18 L90,90 C90,94.42 86.42,98 82,98 L26,98 C21.58,98 18,94.42 18,90 Z"/>
+              <path
+                  android:fillColor="#D4AF37"
+                  android:pathData="M24,20 C24,16.69 26.69,14 30,14 L78,14 C81.31,14 84,16.69 84,20 L84,27 L24,27 Z"/>
+              <path
+                  android:fillColor="#FDE68A"
+                  android:pathData="M34,39 L74,39 C75.1,39 76,39.9 76,41 C76,42.1 75.1,43 74,43 L34,43 C32.9,43 32,42.1 32,41 C32,39.9 32.9,39 34,39 Z"/>
+              <path
+                  android:fillColor="#E2E8F0"
+                  android:pathData="M34,51 L74,51 C75.1,51 76,51.9 76,53 C76,54.1 75.1,55 74,55 L34,55 C32.9,55 32,54.1 32,53 C32,51.9 32.9,51 34,51 Z"/>
+              <path
+                  android:fillColor="#E2E8F0"
+                  android:pathData="M42,63 L74,63 C75.1,63 76,63.9 76,65 C76,66.1 75.1,67 74,67 L42,67 C40.9,67 40,66.1 40,65 C40,63.9 40.9,63 42,63 Z"/>
+              <path
+                  android:fillColor="#D4AF37"
+                  android:pathData="M54,75 L74,75 C75.1,75 76,75.9 76,77 C76,78.1 75.1,79 74,79 L54,79 C52.9,79 52,78.1 52,77 C52,75.9 52.9,75 54,75 Z"/>
+              <path
+                  android:fillColor="#F59E0B"
+                  android:pathData="M28,78 L46,60 L51,65 L33,83 L26,85 Z"/>
+              <path
+                  android:fillColor="#FEF08A"
+                  android:pathData="M47,59 L50,56 C51.1,54.9 52.9,54.9 54,56 L55,57 C56.1,58.1 56.1,59.9 55,61 L52,64 Z"/>
+          </vector>
+          EOF
+
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.rukn.rukn_app">
+
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+
+              <application
+                  android:label="رُكْن"
+                  android:name="${applicationName}"
+                  android:icon="@drawable/rukn_luxury_icon"
+                  android:roundIcon="@drawable/rukn_luxury_icon"
+                  android:supportsRtl="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                        android:name="io.flutter.embedding.android.NormalTheme"
+                        android:resource="@style/NormalTheme"
+                        />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > android/app/build.gradle
+          plugins {
+              id "com.android.application"
+              id "kotlin-android"
+              id "dev.flutter.flutter-gradle-plugin"
+          }
+
+          android {
+              namespace "com.rukn.rukn_app"
+              compileSdk 34
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+
+              kotlinOptions {
+                  jvmTarget = '1.8'
+              }
+
+              sourceSets {
+                  main.java.srcDirs += 'src/main/kotlin'
+              }
+
+              defaultConfig {
+                  applicationId "com.rukn.app"
+                  minSdkVersion 24
+                  targetSdkVersion 34
+                  versionCode 100
+                  versionName "1.0.0"
+              }
+
+              signingConfigs {
+                  release {
+                      storeFile file("rukn_fixed.keystore")
+                      storePassword "rukn123456"
+                      keyAlias "rukn_key"
+                      keyPassword "rukn123456"
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+                  debug {
+                      signingConfig signingConfigs.release
+                  }
+              }
+          }
+
+          flutter {
+              source '../..'
+          }
+          EOF
+
+      - name: Get Flutter Packages & Build Release APK
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - name: Upload Rukn APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rukn-Luxury-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
