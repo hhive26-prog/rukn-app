@@ -45,57 +45,31 @@ class RuknLuxuryApp extends StatefulWidget {
   State<RuknLuxuryApp> createState() => _RuknLuxuryAppState();
 }
 
-class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
+class _RuknLuxuryAppState extends State<RuknLuxuryApp>
+    with WidgetsBindingObserver {
   bool _appUnlocked = false;
-
-  bool _shouldLockOnStart() {
-    try {
-      final dynamic dynSettings = widget.settings;
-      final bool hasPin = (dynSettings.pinCode as String?)?.length == 4;
-      final bool lockApp = (dynSettings.lockWholeApp as bool?) ?? false;
-      return hasPin && lockApp;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  String _resolveFontFamily() {
-    try {
-      final dynamic dynSettings = widget.settings;
-      return (dynSettings.fontFamily as String?) ?? 'Tajawal';
-    } catch (_) {
-      return 'Tajawal';
-    }
-  }
-
-  Color _resolvePrimaryColor() {
-    try {
-      final dynamic dynSettings = widget.settings;
-      return (dynSettings.primaryColor as Color?) ?? const Color(0xFF0F5132);
-    } catch (_) {
-      return const Color(0xFF0F5132);
-    }
-  }
-
-  Color _resolveScaffoldBg() {
-    try {
-      final dynamic dynSettings = widget.settings;
-      return (dynSettings.bgColor as Color?) ??
-          (widget.settings.isDarkMode
-              ? const Color(0xFF0B132B)
-              : const Color(0xFFF8F5F0));
-    } catch (_) {
-      return widget.settings.isDarkMode
-          ? const Color(0xFF0B132B)
-          : const Color(0xFFF8F5F0);
-    }
-  }
 
   @override
   void initState() {
     super.initState();
-    if (!_shouldLockOnStart()) {
-      _appUnlocked = true;
+    WidgetsBinding.instance.addObserver(this);
+    _appUnlocked = !widget.settings.shouldLockAppOnStart;
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-lock when app goes to background if startup lock is enabled
+    if (state == AppLifecycleState.paused &&
+        widget.settings.shouldLockAppOnStart) {
+      setState(() {
+        _appUnlocked = false;
+      });
     }
   }
 
@@ -105,9 +79,9 @@ class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
       animation: Listenable.merge([widget.settings, widget.vault]),
       builder: (context, _) {
         final bool isDark = widget.settings.isDarkMode;
-        final Color primary = _resolvePrimaryColor();
-        final Color scaffoldBg = _resolveScaffoldBg();
-        final String fontFamily = _resolveFontFamily();
+        final Color primary = widget.settings.primaryColor;
+        final Color scaffoldBg = widget.settings.bgColor;
+        final String fontFamily = widget.settings.fontFamily;
 
         SystemChrome.setSystemUIOverlayStyle(
           SystemUiOverlayStyle(
@@ -143,6 +117,8 @@ class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
               seedColor: primary,
               brightness: isDark ? Brightness.dark : Brightness.light,
               primary: primary,
+              secondary: widget.settings.accentColor,
+              surface: widget.settings.cardColor,
             ),
           ),
           builder: (context, child) {
@@ -163,7 +139,7 @@ class _RuknLuxuryAppState extends State<RuknLuxuryApp> {
   }
 
   Widget _buildHomeGate() {
-    if (!_appUnlocked && _shouldLockOnStart()) {
+    if (!_appUnlocked && widget.settings.shouldLockAppOnStart) {
       return RuknPinLockScreen(
         settings: widget.settings,
         title: 'رُكْن محمي برمز سري',
