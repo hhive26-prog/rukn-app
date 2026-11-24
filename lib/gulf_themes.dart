@@ -1,188 +1,282 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// بيانات كل ثيم خليجي فاخر
 class GulfThemeData {
   final int id;
   final String name;
-  final String badge;
-  final String description;
+  final String subtitle;
   final Color primary;
   final Color primaryDark;
-  final Color accentGold;
-  final Color softTint;
-  final Color lightBackground;
-  final Color lightPaper;
+  final Color accent;
+  final Color bgLight;
+  final Color cardLight;
+  final Color paperLight;
+  final Color textMainLight;
+  final Color textSubLight;
+  final Color borderLight;
 
   const GulfThemeData({
     required this.id,
     required this.name,
-    required this.badge,
-    required this.description,
+    required this.subtitle,
     required this.primary,
     required this.primaryDark,
-    required this.accentGold,
-    required this.softTint,
-    required this.lightBackground,
-    required this.lightPaper,
+    required this.accent,
+    required this.bgLight,
+    required this.cardLight,
+    required this.paperLight,
+    required this.textMainLight,
+    required this.textSubLight,
+    required this.borderLight,
   });
+
+  Color bg(bool isDark) => isDark ? const Color(0xFF0B111E) : bgLight;
+  Color card(bool isDark) => isDark ? const Color(0xFF151F32) : cardLight;
+  Color paper(bool isDark) => isDark ? const Color(0xFF111927) : paperLight;
+  Color textMain(bool isDark) => isDark ? const Color(0xFFF3F4F6) : textMainLight;
+  Color textSub(bool isDark) => isDark ? const Color(0xFF9CA3AF) : textSubLight;
+  Color border(bool isDark) =>
+      isDark ? accent.withOpacity(0.28) : borderLight;
 }
 
-/// بيانات الخطوط الـ 12 المدمجة في رُكْن
 class RuknFontOption {
-  final int id;
-  final String title;
-  final String? fontFamily;
+  final String id;
+  final String name;
+  final String family;
+  final String category;
 
   const RuknFontOption({
     required this.id,
-    required this.title,
-    required this.fontFamily,
+    required this.name,
+    required this.family,
+    required this.category,
   });
 }
 
-/// تعريف أداة من أدوات شريط التحرير القابل للتخصيص
 class EditorToolDefinition {
   final String id;
   final String label;
   final IconData icon;
+  final bool defaultVisible;
 
   const EditorToolDefinition({
     required this.id,
     required this.label,
     required this.icon,
+    this.defaultVisible = true,
   });
 }
 
 class GulfThemes {
-  /// الثيمات الخليجية الـ 8 المعتمدة
-  static const List<GulfThemeData> themes = [
+  static const List<GulfThemeData> allThemes = [
+    // 0: السعودي الملكي (معتمد وممتاز)
     GulfThemeData(
       id: 0,
       name: 'السعودي الملكي',
-      badge: '🇸🇦',
-      description: 'أخضر زمردي ملكي مع لمسات ذهبية فاخرة',
-      primary: Color(0xFF065F46),
-      primaryDark: Color(0xFF033829),
-      accentGold: Color(0xFFD4AF37),
-      softTint: Color(0xFFD1FAE5),
-      lightBackground: Color(0xFFF4F7F5),
-      lightPaper: Color(0xFFFFFFFF),
+      subtitle: 'أخضر سلمان الفاخر مع الذهب الملكي',
+      primary: Color(0xFF0F5132),
+      primaryDark: Color(0xFF072B1A),
+      accent: Color(0xFFD4AF37),
+      bgLight: Color(0xFFF7F5F0),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFFFDF9),
+      textMainLight: Color(0xFF14241B),
+      textSubLight: Color(0xFF52665A),
+      borderLight: Color(0xFFE2DCCB),
     ),
+    // 1: العنابي القطري (معتمد وممتاز)
     GulfThemeData(
       id: 1,
       name: 'العنابي القطري',
-      badge: '🇶🇦',
-      description: 'عنابي مخملي رسمي مع إطار ذهبي دافئ',
-      primary: Color(0xFF8A1538),
-      primaryDark: Color(0xFF4C0519),
-      accentGold: Color(0xFFE5C158),
-      softTint: Color(0xFFFFE4E6),
-      lightBackground: Color(0xFFF9F5F6),
-      lightPaper: Color(0xFFFFFFFF),
+      subtitle: 'عنابي الأدعم الفخم مع اللمسة الذهبية',
+      primary: Color(0xFF7A122E),
+      primaryDark: Color(0xFF4A081A),
+      accent: Color(0xFFD4AF37),
+      bgLight: Color(0xFFF9F5F6),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFFFCFD),
+      textMainLight: Color(0xFF281117),
+      textSubLight: Color(0xFF6E4F57),
+      borderLight: Color(0xFFE6D5D9),
     ),
+    // 2: الإماراتي الفاخر (أسود كربوني وتيتانيوم وذهب إماراتي وأبيض لؤلؤي)
     GulfThemeData(
       id: 2,
       name: 'الإماراتي الفاخر',
-      badge: '🇦🇪',
-      description: 'أسود كربوني ملكي مطعّم بالذهب المصقول',
-      primary: Color(0xFF1F2937),
-      primaryDark: Color(0xFF090D16),
-      accentGold: Color(0xFFC5A059),
-      softTint: Color(0xFFFEF3C7),
-      lightBackground: Color(0xFFF5F5F4),
-      lightPaper: Color(0xFFFFFFFF),
+      subtitle: 'كربون وتيتانيوم ملكي مع الذهب والأبيض اللؤلؤي',
+      primary: Color(0xFF23272F),
+      primaryDark: Color(0xFF111318),
+      accent: Color(0xFFD4AF37),
+      bgLight: Color(0xFFF4F5F7),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFAFAFC),
+      textMainLight: Color(0xFF141619),
+      textSubLight: Color(0xFF5A606B),
+      borderLight: Color(0xFFDCE0E6),
     ),
+    // 3: الأزرق الكويتي (أزرق خليجي حيوي ومشرق)
     GulfThemeData(
       id: 3,
       name: 'الأزرق الكويتي',
-      badge: '🇰🇼',
-      description: 'أزرق بحري ياقوتي مستوحى من الخليج العربي',
-      primary: Color(0xFF0C4A6E),
-      primaryDark: Color(0xFF072A40),
-      accentGold: Color(0xFF38BDF8),
-      softTint: Color(0xFFE0F2FE),
-      lightBackground: Color(0xFFF3F7FA),
-      lightPaper: Color(0xFFFFFFFF),
+      subtitle: 'أزرق الخليج الحيوي المشرق مع لمسة ذهبية',
+      primary: Color(0xFF0066CC),
+      primaryDark: Color(0xFF004494),
+      accent: Color(0xFFF59E0B),
+      bgLight: Color(0xFFF0F7FF),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFF9FCFF),
+      textMainLight: Color(0xFF0A2540),
+      textSubLight: Color(0xFF426384),
+      borderLight: Color(0xFFCFE4FF),
     ),
+    // 4: العُماني السلطاني (معتمد وممتاز)
     GulfThemeData(
       id: 4,
       name: 'العُماني السلطاني',
-      badge: '🇴🇲',
-      description: 'نحاسي سلطاني أصيل مستوحى من التراث العُماني',
-      primary: Color(0xFF8C2D19),
-      primaryDark: Color(0xFF431407),
-      accentGold: Color(0xFFD97706),
-      softTint: Color(0xFFFFEDD5),
-      lightBackground: Color(0xFFF8F5F2),
-      lightPaper: Color(0xFFFFFFFF),
+      subtitle: 'نحاسي سلطاني أصيل مع اللبان العُماني',
+      primary: Color(0xFF7C2D12),
+      primaryDark: Color(0xFF4A1807),
+      accent: Color(0xFFD97706),
+      bgLight: Color(0xFFF8F5F2),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFFFDFB),
+      textMainLight: Color(0xFF291711),
+      textSubLight: Color(0xFF6B534B),
+      borderLight: Color(0xFFE5D8D0),
     ),
+    // 5: البحريني اللؤلؤي (أحمرياقوتي مشرق مع بياض اللؤلؤ البحريني)
     GulfThemeData(
       id: 5,
       name: 'البحريني اللؤلؤي',
-      badge: '🇧🇭',
-      description: 'أحمر ياقوتي فخم مع صفاء اللؤلؤ البحريني',
-      primary: Color(0xFF991B1B),
-      primaryDark: Color(0xFF450A0A),
-      accentGold: Color(0xFFF59E0B),
-      softTint: Color(0xFFFEE2E2),
-      lightBackground: Color(0xFFF9F6F6),
-      lightPaper: Color(0xFFFFFFFF),
+      subtitle: 'أحمر ياقوتي حيوي مع إشراقة اللؤلؤ والذهب',
+      primary: Color(0xFFC8102E),
+      primaryDark: Color(0xFF8F081E),
+      accent: Color(0xFFEAB308),
+      bgLight: Color(0xFFFFF6F7),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFFFBFC),
+      textMainLight: Color(0xFF2D0C12),
+      textSubLight: Color(0xFF784750),
+      borderLight: Color(0xFFF5D0D6),
     ),
+    // 6: الصحراوي النجدي (رملي ذهبي مشرق وعسل السدر - مستقل تماماً عن العُماني)
     GulfThemeData(
       id: 6,
       name: 'الصحراوي النجدي',
-      badge: '🐪',
-      description: 'درجات القهوة الشقراء والرمال العربية الدافئة',
-      primary: Color(0xFF78350F),
-      primaryDark: Color(0xFF451A03),
-      accentGold: Color(0xFFD97706),
-      softTint: Color(0xFFFEF3C7),
-      lightBackground: Color(0xFFFAF6F0),
-      lightPaper: Color(0xFFFFFDF9),
+      subtitle: 'رمال النفود الذهبية الدافئة وأصالة طويق',
+      primary: Color(0xFF9A6B32),
+      primaryDark: Color(0xFF66441B),
+      accent: Color(0xFFD97706),
+      bgLight: Color(0xFFFCF9F2),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFFFEFA),
+      textMainLight: Color(0xFF2B2113),
+      textSubLight: Color(0xFF705D43),
+      borderLight: Color(0xFFEAE0C8),
     ),
+    // 7: الليلي الماسي
     GulfThemeData(
       id: 7,
       name: 'الليلي الماسي',
-      badge: '🌑',
-      description: 'كحلي ماسي عميق بلمسات فضية وذهبية هادئة',
+      subtitle: 'كحلي ملكي عميق مع بريق الألماس والذهب',
       primary: Color(0xFF1E293B),
-      primaryDark: Color(0xFF0B1120),
-      accentGold: Color(0xFFD4AF37),
-      softTint: Color(0xFFE2E8F0),
-      lightBackground: Color(0xFFF1F5F9),
-      lightPaper: Color(0xFFFFFFFF),
+      primaryDark: Color(0xFF0B132B),
+      accent: Color(0xFFE2B857),
+      bgLight: Color(0xFFF3F5F8),
+      cardLight: Color(0xFFFFFFFF),
+      paperLight: Color(0xFFFAFBFD),
+      textMainLight: Color(0xFF0F172A),
+      textSubLight: Color(0xFF475569),
+      borderLight: Color(0xFFD8E0EA),
     ),
   ];
 
-  /// الخطوط الـ 12 المعتمدة
-  static const List<RuknFontOption> fonts = [
-    RuknFontOption(id: 0, title: 'Sans — خط واضح وعصري (افتراضي)', fontFamily: null),
-    RuknFontOption(id: 1, title: 'تجوال — خط خليجي حديث وأنيق', fontFamily: 'Tajawal'),
-    RuknFontOption(id: 2, title: 'المراعي — خط عربي كلاسيكي مريح ومتوازن', fontFamily: 'Almarai'),
-    RuknFontOption(id: 3, title: 'شهرزاد عريض — خط نسخي تراثي أصيل', fontFamily: 'ScheherazadeNew'),
-    RuknFontOption(id: 4, title: 'ريدكس برو — خط عصري فائق الوضوح', fontFamily: 'ReadexPro'),
-    RuknFontOption(id: 5, title: 'نوتو سانس — خط قياسي متوازن', fontFamily: 'NotoSansArabic'),
-    RuknFontOption(id: 6, title: 'نوتو نسخ — خط نسخي مطبعي للأبحاث', fontFamily: 'NotoNaskhArabic'),
-    RuknFontOption(id: 7, title: 'آي بي إم بليكس — خط تقني حديث وأنيق', fontFamily: 'IBMPlexSansArabic'),
-    RuknFontOption(id: 8, title: 'عارف رقعة — خط الرقعة العربي الفاخر', fontFamily: 'ArefRuqaa'),
-    RuknFontOption(id: 9, title: 'ريم كوفي — خط كوفي هندسي مميز', fontFamily: 'ReemKufi'),
-    RuknFontOption(id: 10, title: 'Serif — خط رسمي مريح للقراءة', fontFamily: 'serif'),
-    RuknFontOption(id: 11, title: 'Monospace — خط هندسي متساوي الأبعاد', fontFamily: 'monospace'),
+  static const List<RuknFontOption> allFonts = [
+    RuknFontOption(
+      id: 'Tajawal',
+      name: 'خط تجوال (الافتراضي الأنيق)',
+      family: 'Tajawal',
+      category: 'عصري يومي',
+    ),
+    RuknFontOption(
+      id: 'Cairo',
+      name: 'خط القاهرة (واضح ورسمي)',
+      family: 'Cairo',
+      category: 'عصري يومي',
+    ),
+    RuknFontOption(
+      id: 'Almarai',
+      name: 'خط المراعي (سلس ومريح للعين)',
+      family: 'Almarai',
+      category: 'عصري يومي',
+    ),
+    RuknFontOption(
+      id: 'ReadexPro',
+      name: 'خط ريدكس برو (حداثة ودقة)',
+      family: 'ReadexPro',
+      category: 'عصري يومي',
+    ),
+    RuknFontOption(
+      id: 'IBMPlexSansArabic',
+      name: 'خط آي بي إم العربي (تقني فاخر)',
+      family: 'IBMPlexSansArabic',
+      category: 'عصري يومي',
+    ),
+    RuknFontOption(
+      id: 'NotoSansArabic',
+      name: 'خط نوتو سانس (متوازن وشامل)',
+      family: 'NotoSansArabic',
+      category: 'عصري يومي',
+    ),
+    RuknFontOption(
+      id: 'Amiri',
+      name: 'الخط الأميري (نسخ تراثي للشعر والأدب)',
+      family: 'Amiri',
+      category: 'أدبي وتراثي',
+    ),
+    RuknFontOption(
+      id: 'ScheherazadeNew',
+      name: 'خط شهرزاد (نسخ كلاسيكي أصيل)',
+      family: 'ScheherazadeNew',
+      category: 'أدبي وتراثي',
+    ),
+    RuknFontOption(
+      id: 'NotoNaskhArabic',
+      name: 'خط نوتو نسخ (قراءة مطولة مريحة)',
+      family: 'NotoNaskhArabic',
+      category: 'أدبي وتراثي',
+    ),
+    RuknFontOption(
+      id: 'Lateef',
+      name: 'خط لطيف (ديواني ناعم للخواطر)',
+      family: 'Lateef',
+      category: 'أدبي وتراثي',
+    ),
+    RuknFontOption(
+      id: 'ArefRuqaa',
+      name: 'خط عارف رقعة (ديواني فخم للعناوين)',
+      family: 'ArefRuqaa',
+      category: 'ديواني وفني',
+    ),
+    RuknFontOption(
+      id: 'ReemKufi',
+      name: 'خط ريم كوفي (كوفي هندسي عريق)',
+      family: 'ReemKufi',
+      category: 'ديواني وفني',
+    ),
   ];
 
-  /// جميع أدوات التحرير الاحترافية (الأدوات الـ 12 الكلاسيكية + 3 أدوات خليجية ذكية)
   static const List<EditorToolDefinition> allEditorTools = [
     EditorToolDefinition(id: 'undo', label: 'تراجع', icon: Icons.undo_rounded),
     EditorToolDefinition(id: 'redo', label: 'إعادة', icon: Icons.redo_rounded),
-    EditorToolDefinition(id: 'copy', label: 'نسخ', icon: Icons.content_copy_rounded),
+    EditorToolDefinition(id: 'copy', label: 'نسخ', icon: Icons.copy_rounded),
     EditorToolDefinition(id: 'paste', label: 'لصق', icon: Icons.content_paste_rounded),
     EditorToolDefinition(id: 'select_all', label: 'تحديد الكل', icon: Icons.select_all_rounded),
-    EditorToolDefinition(id: 'auto_format', label: 'تنسيق آلي', icon: Icons.auto_fix_high_rounded),
-    EditorToolDefinition(id: 'smart_calc', label: 'جمع الأرقام ∑', icon: Icons.functions_rounded),
-    EditorToolDefinition(id: 'num_convert', label: '١٢٣ ↔ 123', icon: Icons.pin_rounded),
-    EditorToolDefinition(id: 'checklist', label: 'قائمة مهام', icon: Icons.check_box_outlined),
+    EditorToolDefinition(id: 'auto_format', label: 'تنسيق النص', icon: Icons.auto_fix_high_rounded),
+    EditorToolDefinition(id: 'smart_calc', label: 'جمع الأرقام', icon: Icons.functions_rounded),
+    EditorToolDefinition(id: 'num_convert', label: 'تحويل الأرقام', icon: Icons.pin_rounded),
+    EditorToolDefinition(id: 'checklist', label: 'مربع مهمة', icon: Icons.check_box_outlined),
     EditorToolDefinition(id: 'signature', label: 'التوقيع', icon: Icons.draw_rounded),
     EditorToolDefinition(id: 'cut', label: 'قص', icon: Icons.content_cut_rounded),
     EditorToolDefinition(id: 'select_up', label: 'تحديد للأعلى', icon: Icons.vertical_align_top_rounded),
@@ -191,295 +285,300 @@ class GulfThemes {
     EditorToolDefinition(id: 'find_replace', label: 'بحث واستبدال', icon: Icons.find_replace_rounded),
   ];
 
-  static ThemeData buildMaterialTheme({
-    required GulfThemeData gulfTheme,
-    required bool isDarkMode,
-    required String? fontFamily,
-  }) {
-    final bg = isDarkMode ? const Color(0xFF0F172A) : gulfTheme.lightBackground;
-    final cardBg = isDarkMode ? const Color(0xFF1E293B) : gulfTheme.lightPaper;
-    final textPrimary = isDarkMode ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A);
-
-    return ThemeData(
-      useMaterial3: true,
-      brightness: isDarkMode ? Brightness.dark : Brightness.light,
-      primaryColor: gulfTheme.primary,
-      scaffoldBackgroundColor: bg,
-      fontFamily: fontFamily,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: gulfTheme.primary,
-        brightness: isDarkMode ? Brightness.dark : Brightness.light,
-        primary: gulfTheme.primary,
-        secondary: gulfTheme.accentGold,
-        surface: cardBg,
-      ),
-      textTheme: TextTheme(
-        bodyLarge: TextStyle(color: textPrimary, fontFamily: fontFamily),
-        bodyMedium: TextStyle(color: textPrimary, fontFamily: fontFamily),
-        titleLarge: TextStyle(
-          color: textPrimary,
-          fontFamily: fontFamily,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
-  }
+  static const List<String> defaultUserCategories = [
+    'عمل والتزامات',
+    'شعر وخواطر',
+    'مقاضي ومهام',
+    'خاص',
+  ];
 }
 
-/// متحكم الإعدادات الشامل لتطبيق "رُكْن"
 class AppSettingsController extends ChangeNotifier {
-  static const MethodChannel _nativeChannel = MethodChannel('com.rukn.app/native');
-
-  // التخصيص الشخصي لصاحب الركن
-  String _personalPrefix = 'رُكْن';
-  String _userName = '';
-  String _customSubtitle = 'مساحتك الخاصة لتدوين الفكر وتنظيم اليوم';
-  String _signatureText = '';
-
-  // المظهر والخطوط
   int _themeIndex = 0;
   bool _isDarkMode = false;
-  int _fontIndex = 1;
-  int _zoomPercent = 100;
+  String _fontFamily = 'Tajawal';
+  double _baseFontSize = 18.0;
 
-  // إعدادات شريط أدوات التحرير
-  bool _toolbarIconsOnly = false;
-  List<String> _orderedToolIds = [];
-  Set<String> _enabledToolIds = {};
+  String _userName = '';
+  String _headerSubtitle = 'مفكرتي اليومية وملاذي الآمن للنصوص والأفكار';
+  String _signatureText = '';
 
-  // الخصوصية والراحة
+  bool _showHijriDateInHeader = true;
+  bool _keepScreenOn = true;
+  bool _toolbarShowIconsOnly = false;
+
   String _pinCode = '';
-  bool _lockWholeAppOnStart = false;
-  bool _keepScreenOnInReader = true;
-  bool _showHijriInHeader = true;
+  bool _lockWholeApp = false;
 
-  // Getters
-  String get personalPrefix => _personalPrefix;
-  String get userName => _userName;
-  String get customSubtitle => _customSubtitle;
-  String get signatureText => _signatureText;
+  List<String> _toolbarOrder =
+      GulfThemes.allEditorTools.map((e) => e.id).toList();
+  Set<String> _hiddenTools = {};
+  List<String> _customCategories = List<String>.from(GulfThemes.defaultUserCategories);
+
   int get themeIndex => _themeIndex;
   bool get isDarkMode => _isDarkMode;
-  int get fontIndex => _fontIndex;
-  int get zoomPercent => _zoomPercent;
-  bool get toolbarIconsOnly => _toolbarIconsOnly;
-  List<String> get orderedToolIds => List.unmodifiable(_orderedToolIds);
-  Set<String> get enabledToolIds => Set.unmodifiable(_enabledToolIds);
+  String get fontFamily => _fontFamily;
+  double get baseFontSize => _baseFontSize;
+
+  // Fixed prefix "رُكْن" only as requested
+  String get titlePrefix => 'رُكْن';
+  String get userName => _userName;
+  String get headerSubtitle => _headerSubtitle;
+  String get signatureText => _signatureText;
+
+  bool get showHijriDateInHeader => _showHijriDateInHeader;
+  bool get keepScreenOn => _keepScreenOn;
+  bool get toolbarShowIconsOnly => _toolbarShowIconsOnly;
+
   String get pinCode => _pinCode;
-  bool get lockWholeAppOnStart => _lockWholeAppOnStart;
-  bool get keepScreenOnInReader => _keepScreenOnInReader;
-  bool get showHijriInHeader => _showHijriInHeader;
+  bool get hasPin => _pinCode.trim().length == 4;
+  bool get lockWholeApp => _lockWholeApp;
+  bool get shouldLockAppOnStart => hasPin && _lockWholeApp;
 
-  GulfThemeData get activeTheme =>
-      GulfThemes.themes[_themeIndex.clamp(0, GulfThemes.themes.length - 1)];
+  List<String> get customCategories => List.unmodifiable(_customCategories);
 
-  RuknFontOption get activeFontOption =>
-      GulfThemes.fonts[_fontIndex.clamp(0, GulfThemes.fonts.length - 1)];
+  GulfThemeData get theme =>
+      GulfThemes.allThemes[_themeIndex.clamp(0, GulfThemes.allThemes.length - 1)];
 
-  String? get activeFontFamily => activeFontOption.fontFamily;
+  RuknFontOption get font => GulfThemes.allFonts.firstWhere(
+        (f) => f.family == _fontFamily,
+        orElse: () => GulfThemes.allFonts.first,
+      );
 
-  String get fullPersonalHeaderTitle {
+  Color get bgColor => theme.bg(_isDarkMode);
+  Color get cardColor => theme.card(_isDarkMode);
+  Color get paperColor => theme.paper(_isDarkMode);
+  Color get textMainColor => theme.textMain(_isDarkMode);
+  Color get textSubColor => theme.textSub(_isDarkMode);
+  Color get borderColor => theme.border(_isDarkMode);
+  Color get primaryColor => theme.primary;
+  Color get primaryDarkColor => theme.primaryDark;
+  Color get accentColor => theme.accent;
+
+  String get fullHeaderTitle {
     final cleanName = _userName.trim();
     if (cleanName.isEmpty) {
-      return '$_personalPrefix خاص';
+      return 'رُكْن خاص';
     }
-    return '$_personalPrefix $cleanName';
+    if (cleanName.startsWith('رُكْن') || cleanName.startsWith('ركن')) {
+      return cleanName;
+    }
+    return 'رُكْن $cleanName';
   }
 
-  Color get scaffoldBgColor =>
-      _isDarkMode ? const Color(0xFF0F172A) : activeTheme.lightBackground;
+  List<EditorToolDefinition> get orderedAllTools {
+    final map = {for (final t in GulfThemes.allEditorTools) t.id: t};
+    final result = <EditorToolDefinition>[];
+    for (final id in _toolbarOrder) {
+      if (map.containsKey(id)) {
+        result.add(map.remove(id)!);
+      }
+    }
+    result.addAll(map.values);
+    return result;
+  }
 
-  Color get cardBgColor =>
-      _isDarkMode ? const Color(0xFF1E293B) : activeTheme.lightPaper;
+  List<EditorToolDefinition> get visibleEditorTools {
+    return orderedAllTools.where((t) => !_hiddenTools.contains(t.id)).toList();
+  }
 
-  Color get paperBgColor =>
-      _isDarkMode ? const Color(0xFF131C2E) : activeTheme.lightPaper;
-
-  Color get primaryTextColor =>
-      _isDarkMode ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A);
-
-  Color get secondaryTextColor =>
-      _isDarkMode ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
-
-  Color get borderColor => _isDarkMode
-      ? const Color(0xFF334155)
-      : activeTheme.primary.withOpacity(0.14);
+  bool isToolVisible(String id) => !_hiddenTools.contains(id);
 
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    _personalPrefix = prefs.getString('rukn_prefix') ?? 'رُكْن';
-    _userName = prefs.getString('rukn_user_name') ?? '';
-    _customSubtitle = prefs.getString('rukn_subtitle') ??
-        'مساحتك الخاصة لتدوين الفكر وتنظيم اليوم';
-    _signatureText = prefs.getString('rukn_signature') ?? '';
-
-    _themeIndex = (prefs.getInt('rukn_theme_index') ?? 0)
-        .clamp(0, GulfThemes.themes.length - 1);
+    _themeIndex = prefs.getInt('rukn_theme_index') ?? 0;
     _isDarkMode = prefs.getBool('rukn_dark_mode') ?? false;
-    _fontIndex = (prefs.getInt('rukn_font_index') ?? 1)
-        .clamp(0, GulfThemes.fonts.length - 1);
-    _zoomPercent = (prefs.getInt('rukn_zoom_percent') ?? 100).clamp(50, 250);
+    _fontFamily = prefs.getString('rukn_font_family') ?? 'Tajawal';
+    _baseFontSize = prefs.getDouble('rukn_base_font_size') ?? 18.0;
 
-    _toolbarIconsOnly = prefs.getBool('rukn_toolbar_icons_only') ?? false;
+    _userName = prefs.getString('rukn_user_name') ?? '';
+    _headerSubtitle = prefs.getString('rukn_header_subtitle') ??
+        'مفكرتي اليومية وملاذي الآمن للنصوص والأفكار';
+    _signatureText = prefs.getString('rukn_signature_text') ?? '';
+
+    _showHijriDateInHeader = prefs.getBool('rukn_show_hijri') ?? true;
+    _keepScreenOn = prefs.getBool('rukn_keep_screen_on') ?? true;
+    _toolbarShowIconsOnly = prefs.getBool('rukn_toolbar_icons_only') ?? false;
+
     _pinCode = prefs.getString('rukn_pin_code') ?? '';
-    _lockWholeAppOnStart = prefs.getBool('rukn_lock_app_start') ?? false;
-    _keepScreenOnInReader = prefs.getBool('rukn_keep_screen_on') ?? true;
-    _showHijriInHeader = prefs.getBool('rukn_show_hijri') ?? true;
+    _lockWholeApp = prefs.getBool('rukn_lock_whole_app') ?? false;
 
-    final savedOrder = prefs.getStringList('rukn_tool_order');
-    final savedEnabled = prefs.getStringList('rukn_tool_enabled');
-
-    final defaultIds = GulfThemes.allEditorTools.map((e) => e.id).toList();
+    final savedOrder = prefs.getStringList('rukn_toolbar_order');
     if (savedOrder != null && savedOrder.isNotEmpty) {
-      _orderedToolIds = List<String>.from(savedOrder);
-      for (final id in defaultIds) {
-        if (!_orderedToolIds.contains(id)) {
-          _orderedToolIds.add(id);
+      _toolbarOrder = savedOrder;
+    }
+
+    final savedHidden = prefs.getStringList('rukn_hidden_tools');
+    if (savedHidden != null) {
+      _hiddenTools = savedHidden.toSet();
+    }
+
+    final savedCatsJson = prefs.getString('rukn_custom_categories_v2');
+    if (savedCatsJson != null && savedCatsJson.isNotEmpty) {
+      try {
+        final decoded = (jsonDecode(savedCatsJson) as List).cast<String>();
+        if (decoded.isNotEmpty) {
+          _customCategories = decoded;
         }
-      }
-    } else {
-      _orderedToolIds = List<String>.from(defaultIds);
+      } catch (_) {}
     }
 
-    if (savedEnabled != null) {
-      _enabledToolIds = Set<String>.from(savedEnabled);
-    } else {
-      _enabledToolIds = Set<String>.from(defaultIds);
-    }
-
-    notifyListeners();
-  }
-
-  Future<void> updatePersonalIdentity({
-    required String prefix,
-    required String userName,
-    required String subtitle,
-  }) async {
-    _personalPrefix = prefix.trim().isEmpty ? 'رُكْن' : prefix.trim();
-    _userName = userName.trim();
-    _customSubtitle = subtitle.trim().isEmpty
-        ? 'مساحتك الخاصة لتدوين الفكر وتنظيم اليوم'
-        : subtitle.trim();
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('rukn_prefix', _personalPrefix);
-    await prefs.setString('rukn_user_name', _userName);
-    await prefs.setString('rukn_subtitle', _customSubtitle);
-    notifyListeners();
-  }
-
-  Future<void> setSignatureText(String text) async {
-    _signatureText = text;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('rukn_signature', text);
     notifyListeners();
   }
 
   Future<void> setThemeIndex(int index) async {
-    _themeIndex = index.clamp(0, GulfThemes.themes.length - 1);
+    _themeIndex = index.clamp(0, GulfThemes.allThemes.length - 1);
+    notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('rukn_theme_index', _themeIndex);
-    notifyListeners();
   }
 
   Future<void> setDarkMode(bool value) async {
     _isDarkMode = value;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('rukn_dark_mode', value);
     notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('rukn_dark_mode', _isDarkMode);
   }
 
-  Future<void> setFontIndex(int index) async {
-    _fontIndex = index.clamp(0, GulfThemes.fonts.length - 1);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('rukn_font_index', _fontIndex);
+  Future<void> setFontFamily(String family) async {
+    _fontFamily = family;
     notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('rukn_font_family', _fontFamily);
   }
 
-  Future<void> setZoomPercent(int percent) async {
-    _zoomPercent = percent.clamp(50, 250);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('rukn_zoom_percent', _zoomPercent);
+  Future<void> setBaseFontSize(double size) async {
+    _baseFontSize = size.clamp(12.0, 34.0);
     notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('rukn_base_font_size', _baseFontSize);
   }
 
-  Future<void> setToolbarIconsOnly(bool iconsOnly) async {
-    _toolbarIconsOnly = iconsOnly;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('rukn_toolbar_icons_only', iconsOnly);
-    notifyListeners();
-  }
-
-  Future<void> saveToolbarCustomization({
-    required List<String> orderedIds,
-    required Set<String> enabledIds,
+  Future<void> updatePersonalIdentity({
+    String? prefix,
+    required String userName,
+    required String subtitle,
+    required String signature,
   }) async {
-    _orderedToolIds = List<String>.from(orderedIds);
-    _enabledToolIds = Set<String>.from(enabledIds);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('rukn_tool_order', _orderedToolIds);
-    await prefs.setStringList('rukn_tool_enabled', _enabledToolIds.toList());
+    _userName = userName.trim();
+    _headerSubtitle = subtitle.trim().isEmpty
+        ? 'مفكرتي اليومية وملاذي الآمن للنصوص والأفكار'
+        : subtitle.trim();
+    _signatureText = signature.trim();
     notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('rukn_user_name', _userName);
+    await prefs.setString('rukn_header_subtitle', _headerSubtitle);
+    await prefs.setString('rukn_signature_text', _signatureText);
   }
 
-  Future<void> resetToolbarToDefault() async {
-    final defaultIds = GulfThemes.allEditorTools.map((e) => e.id).toList();
-    await saveToolbarCustomization(
-      orderedIds: defaultIds,
-      enabledIds: Set<String>.from(defaultIds),
-    );
+  Future<void> setShowHijriDateInHeader(bool value) async {
+    _showHijriDateInHeader = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('rukn_show_hijri', _showHijriDateInHeader);
   }
 
-  List<EditorToolDefinition> get activeOrderedTools {
-    final List<EditorToolDefinition> result = [];
-    for (final id in _orderedToolIds) {
-      if (_enabledToolIds.contains(id)) {
-        final match = GulfThemes.allEditorTools.where((t) => t.id == id);
-        if (match.isNotEmpty) {
-          result.add(match.first);
-        }
-      }
-    }
-    return result;
+  Future<void> setKeepScreenOn(bool value) async {
+    _keepScreenOn = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('rukn_keep_screen_on', _keepScreenOn);
+  }
+
+  Future<void> setToolbarShowIconsOnly(bool value) async {
+    _toolbarShowIconsOnly = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('rukn_toolbar_icons_only', _toolbarShowIconsOnly);
   }
 
   Future<void> setPinCode(String newPin) async {
     _pinCode = newPin.trim();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('rukn_pin_code', _pinCode);
-    if (_pinCode.isEmpty) {
-      _lockWholeAppOnStart = false;
-      await prefs.setBool('rukn_lock_app_start', false);
+    if (_pinCode.length != 4) {
+      _lockWholeApp = false;
     }
     notifyListeners();
-  }
-
-  Future<void> setLockWholeAppOnStart(bool value) async {
-    _lockWholeAppOnStart = value;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('rukn_lock_app_start', value);
-    notifyListeners();
+    await prefs.setString('rukn_pin_code', _pinCode);
+    await prefs.setBool('rukn_lock_whole_app', _lockWholeApp);
   }
 
-  Future<void> setKeepScreenOnInReader(bool value) async {
-    _keepScreenOnInReader = value;
+  Future<void> setLockWholeApp(bool value) async {
+    _lockWholeApp = hasPin ? value : false;
+    notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('rukn_keep_screen_on', value);
-    notifyListeners();
+    await prefs.setBool('rukn_lock_whole_app', _lockWholeApp);
   }
 
-  Future<void> setShowHijriInHeader(bool value) async {
-    _showHijriInHeader = value;
+  Future<void> saveToolbarCustomization({
+    required List<String> orderedIds,
+    required Set<String> hiddenIds,
+  }) async {
+    _toolbarOrder = List<String>.from(orderedIds);
+    _hiddenTools = Set<String>.from(hiddenIds);
+    if (_hiddenTools.length >= GulfThemes.allEditorTools.length) {
+      _hiddenTools.remove(_toolbarOrder.first);
+    }
+    notifyListeners();
+
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('rukn_show_hijri', value);
-    notifyListeners();
+    await prefs.setStringList('rukn_toolbar_order', _toolbarOrder);
+    await prefs.setStringList('rukn_hidden_tools', _hiddenTools.toList());
   }
 
-  Future<void> applyWakeLock(bool enable) async {
-    try {
-      await _nativeChannel.invokeMethod('setKeepScreenOn', {
-        'enable': enable && _keepScreenOnInReader,
-      });
-    } catch (_) {}
+  Future<void> resetToolbarToDefault() async {
+    _toolbarOrder = GulfThemes.allEditorTools.map((e) => e.id).toList();
+    _hiddenTools = {};
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('rukn_toolbar_order');
+    await prefs.remove('rukn_hidden_tools');
+  }
+
+  Future<void> addCustomCategory(String name) async {
+    final clean = name.trim();
+    if (clean.isEmpty ||
+        clean == 'الكل' ||
+        clean == 'المثبتة' ||
+        _customCategories.contains(clean)) {
+      return;
+    }
+    _customCategories.add(clean);
+    notifyListeners();
+    await _persistCategories();
+  }
+
+  Future<void> renameCustomCategory(String oldName, String newName) async {
+    final cleanNew = newName.trim();
+    if (cleanNew.isEmpty || cleanNew == 'الكل' || cleanNew == 'المثبتة') return;
+    final idx = _customCategories.indexOf(oldName);
+    if (idx != -1 && !_customCategories.contains(cleanNew)) {
+      _customCategories[idx] = cleanNew;
+      notifyListeners();
+      await _persistCategories();
+    }
+  }
+
+  Future<void> deleteCustomCategory(String name) async {
+    _customCategories.remove(name);
+    notifyListeners();
+    await _persistCategories();
+  }
+
+  Future<void> resetCategoriesToDefault() async {
+    _customCategories = List<String>.from(GulfThemes.defaultUserCategories);
+    notifyListeners();
+    await _persistCategories();
+  }
+
+  Future<void> _persistCategories() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'rukn_custom_categories_v2',
+      jsonEncode(_customCategories),
+    );
   }
 }
